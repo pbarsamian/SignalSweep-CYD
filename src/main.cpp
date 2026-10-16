@@ -1,4 +1,4 @@
-// SignalSweep CYD v3.19
+// SignalSweep CYD v3.20
 // Upstream: https://github.com/B0z0dcl0wn/SignalSweep (GPL-3.0)
 // Board: ESP32-2432S028R "Cheap Yellow Display"
 
@@ -161,7 +161,7 @@ static void ui_task(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
-    Serial.println("[SignalSweep CYD v3.19] boot");
+    Serial.println("[SignalSweep CYD v3.20] boot");
 
     // LED — all off (active LOW)
     pinMode(PIN_LED_R, OUTPUT); digitalWrite(PIN_LED_R, HIGH);

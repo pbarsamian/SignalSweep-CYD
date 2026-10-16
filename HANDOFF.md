@@ -1,4 +1,4 @@
-# SignalSweep CYD — Session Handoff (v3.19)
+# SignalSweep CYD — Session Handoff (v3.20)
 
 ## Board: ESP32-2432S028R "Cheap Yellow Display"
 - ILI9341 (HSPI), rotation 3. **Panel colour fix (confirmed by boot test MODE 2):**
@@ -53,6 +53,15 @@
   - RAW: BLE advertising hex, or 802.11 elements-present decode + vendor IE count
   - LINKS/TRAFF/HUNT/CAP: placeholders ("coming in a later version")
 - Serial: [focus] lines show locked channel + target frame/advert counts
+
+## Hunt mode (v3.20)
+- HUNT sub-tab: locks onto the focused device, click + screen pulse + RGB LED
+  all speed up as RSSI rises (geiger style); silent after 8 s no contact
+- Big live RSSI, WARMER/colder trend, peak, seconds-since-heard
+- hunt_interval(): -95 dBm ~1.2 s -> -35 dBm ~70 ms
+- FIX: speaker LEDC channel 1 was never initialized (alert beeps were silent) -
+  now ledcSetup(1,2000,8)+ledcAttachPin(PIN_SPEAKER,1) in ui_init
+- Leaving HUNT / Back / main-tab all call hunt_all_off()
 
 ## Vendor database
 - platformio.ini uses huge_app.csv (3 MB app, no OTA) — CHECK flash % in build output

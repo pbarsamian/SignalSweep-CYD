@@ -1,4 +1,4 @@
-// SignalSweep CYD — UI v3.19
+// SignalSweep CYD — UI v3.20
 // Direct TFT rendering — no sprites (too much RAM on ESP32).
 // Touch debug output enabled — watch serial to verify taps.
 
@@ -345,6 +345,7 @@ static Detection s_detail_last;          // last copy, shown if it ages out
 static bool      s_detail_gone   = false;
 static int       s_detail_scroll = 0;
 static uint32_t  s_detail_drawn  = 0;
+static Settings* g_cfg_ref = nullptr;   // set each ui_update for the hunt path
 
 #define DROW_H   18
 #define DLIST_Y  (DHEAD_Y + 2)
@@ -538,6 +539,137 @@ static void draw_subtabs(const Detection& d) {
     }
 }
 
+// ── Hunt mode ───────────────────────────────────────────────────────────────
+// Lock onto the focused device and climb toward it: click rate and screen/LED
+// pulse rise with RSSI. Goes quiet after HUNT_SILENCE_MS of no contact.
+#define HUNT_SILENCE_MS 8000
+#define HUNT_RSSI_FLOOR -95
+#define HUNT_RSSI_CEIL  -35
+
+static bool     s_hunt_on = false;
+static uint32_t s_hunt_last_click = 0;
+static uint32_t s_hunt_last_pulse = 0;
+static bool     s_hunt_pulse_state = false;
+static int      s_hunt_peak = -128;
+static int      s_hunt_prev_rssi = -128;
+
+// RSSI -> click/pulse interval. Closer = faster. -95 dBm ~1.2 s, -35 dBm ~70 ms.
+static uint32_t hunt_interval(int rssi) {
+    int r = constrain(rssi, HUNT_RSSI_FLOOR, HUNT_RSSI_CEIL);
+    float t = (float)(r - HUNT_RSSI_FLOOR) / (HUNT_RSSI_CEIL - HUNT_RSSI_FLOOR); // 0..1
+    return (uint32_t)(1200 - t * 1130);   // 1200ms far -> 70ms near
+}
+
+// Heat colour blue -> cyan -> amber -> red as the target gets closer
+static uint16_t hunt_heat(int rssi) {
+    int r = constrain(rssi, HUNT_RSSI_FLOOR, HUNT_RSSI_CEIL);
+    float t = (float)(r - HUNT_RSSI_FLOOR) / (HUNT_RSSI_CEIL - HUNT_RSSI_FLOOR);
+    uint8_t R, G, B;
+    if (t < 0.5f) { float u=t/0.5f; R=0; G=(uint8_t)(128+127*u); B=(uint8_t)(255-100*u); }
+    else          { float u=(t-0.5f)/0.5f; R=(uint8_t)(255*u); G=(uint8_t)(255-100*u); B=(uint8_t)(155-155*u); }
+    return tft.color565(R, G, B);
+}
+
+static void hunt_led(uint16_t on, int rssi) {
+    // Approximate the heat colour on the RGB LED (active LOW)
+    int r = constrain(rssi, HUNT_RSSI_FLOOR, HUNT_RSSI_CEIL);
+    float t = (float)(r - HUNT_RSSI_FLOOR) / (HUNT_RSSI_CEIL - HUNT_RSSI_FLOOR);
+    bool lr = on && t > 0.4f;     // red grows with closeness
+    bool lg = on && t < 0.6f;     // green fades with closeness
+    bool lb = on && t < 0.3f;     // blue only when far
+    digitalWrite(PIN_LED_R, lr?LOW:HIGH);
+    digitalWrite(PIN_LED_G, lg?LOW:HIGH);
+    digitalWrite(PIN_LED_B, lb?LOW:HIGH);
+}
+
+static void hunt_all_off() {
+    ledcWrite(1, 0);
+    digitalWrite(PIN_LED_R, HIGH); digitalWrite(PIN_LED_G, HIGH); digitalWrite(PIN_LED_B, HIGH);
+}
+
+// Called every UI frame while the HUNT sub-tab is active
+static void hunt_tick(const Detection& d, const Settings& cfg, bool gone) {
+    uint32_t now = millis();
+    uint32_t age = now - d.timestamp_ms;
+    bool live = !gone && age < HUNT_SILENCE_MS;
+    int rssi = live ? d.rssi : -128;
+    if (live && rssi > s_hunt_peak) s_hunt_peak = rssi;
+
+    if (live) {
+        uint32_t iv = hunt_interval(rssi);
+        // Click: short tone burst
+        if (cfg.speaker_en && now - s_hunt_last_click >= iv) {
+            s_hunt_last_click = now;
+            ledcWriteTone(1, 3000);
+            // brief — turned off on the next frame via the pulse timer
+        } else if (now - s_hunt_last_click >= 12) {
+            ledcWrite(1, 0);   // end the click quickly
+        }
+        // Pulse: screen flash + LED, same cadence as clicks
+        if (now - s_hunt_last_pulse >= iv) {
+            s_hunt_last_pulse = now;
+            s_hunt_pulse_state = !s_hunt_pulse_state;
+            if (cfg.led_en) hunt_led(s_hunt_pulse_state, rssi);
+        }
+    } else {
+        hunt_all_off();
+        s_hunt_pulse_state = false;
+    }
+}
+
+static void draw_hunt(const Detection& d, const Settings& cfg, bool gone, bool full) {
+    uint32_t now = millis();
+    uint32_t age = now - d.timestamp_ms;
+    bool live = !gone && age < HUNT_SILENCE_MS;
+    int rssi = live ? d.rssi : -128;
+    uint16_t heat = live ? hunt_heat(rssi) : C_PANEL;
+
+    int cy = (DHEAD_Y + TAB_Y) / 2;
+
+    // Pulsing ring: filled when the pulse is high, so it strobes with the clicks
+    int ringR = 46;
+    uint16_t ringc = (live && s_hunt_pulse_state) ? heat : C_BLACK;
+    tft.fillCircle(SCREEN_W/2, cy, ringR, ringc);
+    tft.drawCircle(SCREEN_W/2, cy, ringR, live ? heat : C_BORDER);
+
+    // Big RSSI number in the middle
+    char v[12];
+    if (live) snprintf(v, sizeof(v), "%d", rssi); else snprintf(v, sizeof(v), "--");
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(live ? C_BLACK : C_MDGREY, ringc);
+    tft.drawString(v, SCREEN_W/2, cy-6, 6);
+    tft.setTextColor(live ? C_BLACK : C_MDGREY, ringc);
+    tft.drawString("dBm", SCREEN_W/2, cy+20, 2);
+
+    // Left column: trend arrow + peak
+    tft.setTextDatum(ML_DATUM);
+    tft.fillRect(4, DHEAD_Y+6, 70, 60, C_BLACK);
+    const char* arrow = "--";
+    uint16_t ac = C_MDGREY;
+    if (live) {
+        if (rssi > s_hunt_prev_rssi + 1) { arrow = "WARMER"; ac = C_TRACKER; }
+        else if (rssi < s_hunt_prev_rssi - 1) { arrow = "colder"; ac = C_ACCENT; }
+        else { arrow = "steady"; ac = C_LTGREY; }
+        s_hunt_prev_rssi = rssi;
+    }
+    tft.setTextColor(ac, C_BLACK);
+    tft.drawString(arrow, 6, DHEAD_Y+16, 2);
+    char pk[16]; snprintf(pk, sizeof(pk), "peak %d", s_hunt_peak > -128 ? s_hunt_peak : 0);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    tft.drawString(pk, 6, DHEAD_Y+36, 2);
+
+    // Right column: seconds since last heard
+    tft.setTextDatum(MR_DATUM);
+    tft.fillRect(SCREEN_W-78, DHEAD_Y+6, 74, 60, C_BLACK);
+    char ls[18];
+    if (gone) snprintf(ls, sizeof(ls), "aged out");
+    else snprintf(ls, sizeof(ls), "%us ago", (unsigned)(age/1000));
+    tft.setTextColor(live ? C_LTGREY : C_CAMERA, C_BLACK);
+    tft.drawString(ls, SCREEN_W-6, DHEAD_Y+16, 2);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    tft.drawString(cfg.speaker_en?"sound on":"muted", SCREEN_W-6, DHEAD_Y+36, 2);
+}
+
 // Append WPS / chipset / timing identity gathered by focus mode
 static void add_focus_rows(const Detection& d) {
     FocusProfile f;
@@ -675,6 +807,13 @@ static void draw_detail(const DetectionRegistry& reg, bool full) {
 
     // Pages that are not the scrolling INFO list draw themselves and return
     if (s_dpage == DP_RAW)  { draw_raw(d, full);  s_detail_drawn = millis(); return; }
+    if (s_dpage == DP_HUNT) {
+        if (full) tft.fillRect(0, DHEAD_Y, SCREEN_W, TAB_Y - DHEAD_Y, C_BLACK);
+        hunt_tick(d, g_cfg_ref ? *g_cfg_ref : Settings(), gone);
+        draw_hunt(d, g_cfg_ref ? *g_cfg_ref : Settings(), gone, full);
+        s_detail_drawn = millis();
+        return;
+    }
     if (s_dpage != DP_INFO) {
         if (full) {
             tft.fillRect(0, DHEAD_Y, SCREEN_W, TAB_Y - DHEAD_Y, C_BLACK);
@@ -756,7 +895,7 @@ static void draw_settings(Settings& s) {
         tft.fillCircle(*rows[i].v ? x+142 : x+127, y+18, 5, C_WHITE);
     }
     tft.setTextColor(C_MDGREY, C_BLACK);
-    tft.drawString("SignalSweep v3.19  GPL-3.0", 4, PAGE_Y+PAGE_H-12, 1);
+    tft.drawString("SignalSweep v3.20  GPL-3.0", 4, PAGE_Y+PAGE_H-12, 1);
 }
 
 // ── Touch ─────────────────────────────────────────────────────────────────────
@@ -766,7 +905,7 @@ static void handle_touch(int tx, int ty, const DetectionRegistry& reg, Settings&
     if (ty >= TAB_Y) {
         int t = tx / TAB_W;
         if (t>=0 && t<4) {
-            if (s_tab==Tab::DETAIL && (Tab)t!=Tab::DETAIL) focus_stop();
+            if (s_tab==Tab::DETAIL && (Tab)t!=Tab::DETAIL) { hunt_all_off(); focus_stop(); }
             Serial.printf("[tap] switching to tab %d\n", t);
             s_tab = (Tab)t;
             s_scroll = 0;
@@ -806,6 +945,7 @@ static void handle_touch(int tx, int ty, const DetectionRegistry& reg, Settings&
         }
     } else if (s_tab==Tab::DETAIL) {
         if (inRect(tx,ty, 0,PAGE_Y, 80,22)) {
+            hunt_all_off();
             focus_stop();                 // resume sweeping
             s_tab=Tab::LIST;
             s_page_dirty=true;
@@ -813,8 +953,13 @@ static void handle_touch(int tx, int ty, const DetectionRegistry& reg, Settings&
             int w = SCREEN_W / DP_COUNT;
             int p = tx / w;
             if (p >= 0 && p < DP_COUNT && p != (int)s_dpage) {
+                if (s_dpage == DP_HUNT) hunt_all_off();   // leaving hunt
                 s_dpage = (DetailPage)p;
                 s_detail_scroll = 0;
+                if (s_dpage == DP_HUNT) {                 // entering hunt
+                    s_hunt_peak = -128; s_hunt_prev_rssi = -128;
+                    s_hunt_last_click = s_hunt_last_pulse = 0;
+                }
                 s_page_dirty = true;
             }
         } else if (inRect(tx,ty, SCREEN_W-72,PAGE_Y, 70,22) && !s_detail_gone) {
@@ -865,6 +1010,12 @@ void ui_init(Settings& s) {
     ledcAttachPin(PIN_TFT_BL, 0);
     ledcWrite(0, s.brightness);
 
+    // Speaker on LEDC channel 1 (SC8002B amp via PIN_SPEAKER) — needed for
+    // both alert beeps and hunt-mode clicks.
+    ledcSetup(1, 2000, 8);
+    ledcAttachPin(PIN_SPEAKER, 1);
+    ledcWrite(1, 0);
+
     touch_init();
 
     tft.init();
@@ -891,6 +1042,7 @@ void ui_init(Settings& s) {
 }
 
 void ui_update(const DetectionRegistry& reg, Settings& s) {
+    g_cfg_ref = &s;
     int tx, ty;
     bool touched = touch_get(tx, ty);
     if (touched && !s_was_touched) {
@@ -929,8 +1081,9 @@ void ui_update(const DetectionRegistry& reg, Settings& s) {
             if (s_page_dirty) {
                 draw_detail(reg, true);
                 s_page_dirty = false;
-            } else if (millis() - s_detail_drawn >= 1000) {
-                draw_detail(reg, false);   // live values (RSSI, last seen...)
+            } else {
+                uint32_t iv = (s_dpage == DP_HUNT) ? 30 : 1000;  // hunt updates fast
+                if (millis() - s_detail_drawn >= iv) draw_detail(reg, false);
             }
             break;
         case Tab::SETTINGS:
