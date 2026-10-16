@@ -1,0 +1,20 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+*.pyc
+__pycache__/
+
+# Build artifacts
+*.bin
+*.elf
+*.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# The generated vendor table is large and reproducible from tools/.
+# Comment the next line out if you prefer to commit it for offline users.
+include/vendor_db_data.h

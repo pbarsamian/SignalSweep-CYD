@@ -1,0 +1,21 @@
+SignalSweep CYD
+Copyright (C) 2026 pbarsamian and contributors
+
+Based on SignalSweep (https://github.com/B0z0dcl0wn/SignalSweep),
+Copyright (C) B0z0dcl0wn, licensed GPL-3.0-or-later.
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+The full text of the GNU General Public License version 3 is available at:
+https://www.gnu.org/licenses/gpl-3.0.txt
+
+  -- To include the full text locally, run (needs internet):
+     curl -L https://www.gnu.org/licenses/gpl-3.0.txt -o LICENSE
+     (this file is a placeholder pointing to the same license)
