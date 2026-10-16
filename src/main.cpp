@@ -1,4 +1,4 @@
-// SignalSweep CYD v3.20
+// SignalSweep CYD v3.21
 // Upstream: https://github.com/B0z0dcl0wn/SignalSweep (GPL-3.0)
 // Board: ESP32-2432S028R "Cheap Yellow Display"
 
@@ -76,7 +76,12 @@ static void scan_task(void*) {
 
         if (want != focus_mode) {
             // ── Enter / change / leave focus ─────────────────────────────────
-            if (want == FOCUS_WIFI)      { if (ble_active) radio_to_wifi(); ble_active = false; }
+            if (focus_mode == FOCUS_WIFI && s_wifi_ready) scanner_wifi_data_filter(false);
+            if (want == FOCUS_WIFI) {
+                if (ble_active) radio_to_wifi();
+                ble_active = false;
+                scanner_wifi_data_filter(true);   // peers/traffic need data frames
+            }
             else if (want == FOCUS_BLE)  { radio_to_ble(true); ble_active = true; }
             else {
                 // focus ended: resume the sweep, BLE slot first
@@ -120,6 +125,17 @@ static void scan_task(void*) {
         }
 
         if (xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            // Focused WiFi target heard transmitting: keep its entry alive and
+            // its RSSI current (matters for pivoted peers, which never re-match a rule)
+            if (g_focus.active && g_focus.radio == FOCUS_WIFI && g_focus.last_tx_ms &&
+                millis() - g_focus.last_tx_ms < 5000) {
+                for (int i = 0; i < g_reg.count; i++)
+                    if (memcmp(g_reg.items[i].mac, g_focus.mac, 6) == 0) {
+                        g_reg.items[i].timestamp_ms = g_focus.last_tx_ms;
+                        g_reg.items[i].rssi = g_focus.last_rssi;
+                        break;
+                    }
+            }
             g_reg.prune(millis());
             xSemaphoreGive(g_reg_mutex);
         }
@@ -127,9 +143,10 @@ static void scan_task(void*) {
         if (millis() - s_stats_ms >= 5000) {
             s_stats_ms = millis();
             if (focus_mode == FOCUS_NONE) Serial.printf("[slot] %s\n", ble_active ? "BLE" : "WiFi");
-            else Serial.printf("[focus] %s ch%d, target frames=%u adverts=%u\n",
+            else Serial.printf("[focus] %s ch%d, target frames=%u adverts=%u data=%u peers=%u\n",
                      focus_mode == FOCUS_WIFI ? "WiFi" : "BLE", g_focus.channel,
-                     (unsigned)g_focus.frames, (unsigned)g_focus.adv_count);
+                     (unsigned)g_focus.frames, (unsigned)g_focus.adv_count,
+                     (unsigned)g_focus.data_frames, (unsigned)g_focus.peer_count);
             stats_print();
         }
     }
@@ -161,7 +178,7 @@ static void ui_task(void*) {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
-    Serial.println("[SignalSweep CYD v3.20] boot");
+    Serial.println("[SignalSweep CYD v3.21] boot");
 
     // LED — all off (active LOW)
     pinMode(PIN_LED_R, OUTPUT); digitalWrite(PIN_LED_R, HIGH);

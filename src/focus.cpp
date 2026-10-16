@@ -89,8 +89,62 @@ static void parse_wps(const uint8_t* a, int len) {
     g_focus.has_wps = true;
 }
 
-void focus_note_wifi(uint8_t subtype, const uint8_t* f, int length) {
+void focus_note_peer(bool is_data, const uint8_t* f, int length, int rssi) {
+    if (!g_focus.active || g_focus.radio != FOCUS_WIFI || length < 24) return;
+    const uint8_t* ra = f + 4;    // receiver address (addr1)
+    const uint8_t* ta = f + 10;   // transmitter address (addr2)
+    bool from_t = memcmp(ta, g_focus.mac, 6) == 0;
+    bool to_t   = memcmp(ra, g_focus.mac, 6) == 0;
+    if (!from_t && !to_t) return;
+    const uint8_t* peer = from_t ? ra : ta;
+    bool peer_ok = !(peer[0] & 1) && memcmp(peer, g_focus.mac, 6) != 0;  // not group-addressed
+
+    uint8_t sub = f[0] >> 4;
+    bool ds_to = f[1] & 0x01, ds_from = f[1] & 0x02;
+    uint8_t role = PEER_UNKNOWN;
+    if (is_data) {
+        // ToDS only: station -> AP.  FromDS only: AP -> station.
+        if (ds_to && !ds_from)      role = from_t ? PEER_AP : PEER_CLIENT;
+        else if (!ds_to && ds_from) role = from_t ? PEER_CLIENT : PEER_AP;
+    } else if (sub == 0 || sub == 2) {        // (re)association request: client -> AP
+        role = from_t ? PEER_AP : PEER_CLIENT;
+    } else if (sub == 1 || sub == 3) {        // (re)association response: AP -> client
+        role = from_t ? PEER_CLIENT : PEER_AP;
+    }
+
     if (xSemaphoreTake(s_mux, 0) != pdTRUE) return;
+    uint32_t now = millis();
+    if (is_data) g_focus.data_frames++;
+    if (from_t) { g_focus.last_tx_ms = now; g_focus.last_rssi = (int8_t)constrain(rssi, -127, 0); }
+    if (peer_ok) {
+        int slot = -1;
+        for (int i = 0; i < g_focus.peer_count; i++)
+            if (memcmp(g_focus.peers[i].mac, peer, 6) == 0) { slot = i; break; }
+        if (slot < 0) {
+            if (g_focus.peer_count < FOCUS_MAX_PEERS) slot = g_focus.peer_count++;
+            else {                                   // table full: replace the stalest peer
+                slot = 0;
+                for (int i = 1; i < FOCUS_MAX_PEERS; i++)
+                    if (g_focus.peers[i].last_ms < g_focus.peers[slot].last_ms) slot = i;
+            }
+            g_focus.peers[slot] = FocusPeer();
+            memcpy(g_focus.peers[slot].mac, peer, 6);
+        }
+        FocusPeer& p = g_focus.peers[slot];
+        p.last_ms = now;
+        if (from_t) { p.to_frames++;   p.to_bytes   += length; }
+        else        { p.from_frames++; p.from_bytes += length;
+                      p.rssi = (int8_t)constrain(rssi, -127, 0); }
+        if (is_data && (sub & 0x08)) p.qos_frames++;
+        if (role != PEER_UNKNOWN) p.role = role;
+    }
+    xSemaphoreGive(s_mux);
+}
+
+void focus_note_wifi(uint8_t subtype, const uint8_t* f, int length, int rssi) {
+    if (xSemaphoreTake(s_mux, 0) != pdTRUE) return;
+    g_focus.last_tx_ms = millis();
+    g_focus.last_rssi = (int8_t)constrain(rssi, -127, 0);
     g_focus.frames++;
     if (subtype == 8) g_focus.beacons++;
     else if (subtype == 5) g_focus.probe_resps++;

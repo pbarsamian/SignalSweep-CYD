@@ -1,4 +1,4 @@
-# SignalSweep CYD — Session Handoff (v3.20)
+# SignalSweep CYD — Session Handoff (v3.21)
 
 ## Board: ESP32-2432S028R "Cheap Yellow Display"
 - ILI9341 (HSPI), rotation 3. **Panel colour fix (confirmed by boot test MODE 2):**
@@ -51,7 +51,7 @@
   - INFO: scrollable rows + focus identity (WPS maker/model/serial/name,
     spatial streams, vendor-IE chipset hints, live frame/advert counts)
   - RAW: BLE advertising hex, or 802.11 elements-present decode + vendor IE count
-  - LINKS/TRAFF/HUNT/CAP: placeholders ("coming in a later version")
+  - HUNT: v3.20; LINKS/TRAFF: v3.21; CAP: placeholder ("coming in a later version")
 - Serial: [focus] lines show locked channel + target frame/advert counts
 
 ## Hunt mode (v3.20)
@@ -62,6 +62,23 @@
 - FIX: speaker LEDC channel 1 was never initialized (alert beeps were silent) -
   now ledcSetup(1,2000,8)+ledcAttachPin(PIN_SPEAKER,1) in ui_init
 - Leaving HUNT / Back / main-tab all call hunt_all_off()
+
+## Links + traffic (v3.21a)
+- While a WiFi target is focused the promiscuous filter widens to MGMT+DATA
+  (scanner_wifi_data_filter, toggled by the scan task on focus enter/leave)
+- focus_note_peer(): headers only. Tallies per-peer frames each way, bytes, QoS,
+  RSSI (peer's own tx), role from ToDS/FromDS (+assoc frames): STA vs AP.
+  16-slot table in FocusProfile, stalest evicted. No payloads read.
+- TRAFF: peers by frame count (>to <from bytes Q=QoS rssi). LINKS: OBSERVED
+  (AP/clients, probed SSID, same MAC on BLE+WiFi), INFERRED (sibling MACs: octets
+  0-4 equal ignoring LA bit, last octet within 16; devices probing the target SSID;
+  registry only), CORRELATED (placeholder: needs SD history, v3.21b)
+- Peer rows are tappable: pivot_to() focuses that device; unknown WiFi peers are
+  added to the registry as UNKNOWN "Peer (pivot)" (hidden from the LIST tab)
+- Scan task refreshes the focused entry's timestamp/RSSI whenever the target is
+  heard transmitting, so pivoted peers don't age out and HUNT tracks them
+- BLE focus: LINKS/TRAFF state plainly that BLE connections are not observable
+- UNTESTED on hardware as of this commit (builds clean, flash 33%)
 
 ## Vendor database
 - platformio.ini uses huge_app.csv (3 MB app, no OTA) — CHECK flash % in build output

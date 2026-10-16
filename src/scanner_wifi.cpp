@@ -115,6 +115,12 @@ static void scope_feed(int ch, int rssi) {
 }
 
 static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if (type == WIFI_PKT_DATA) {
+        // Data frames only arrive while focused (filter widened); headers only
+        auto* dp = (wifi_promiscuous_pkt_t*)buf;
+        focus_note_peer(true, dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi);
+        return;
+    }
     if (type != WIFI_PKT_MGMT) return;
     g_stats.wifi_mgmt++;
     auto* pkt = (wifi_promiscuous_pkt_t*)buf;
@@ -129,7 +135,8 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     uint8_t* addr2 = payload + 10;
 
     // Focus: deep-collect every management frame from the target
-    if (focus_target(addr2, FOCUS_WIFI)) focus_note_wifi(fsubtype, payload, length);
+    if (focus_target(addr2, FOCUS_WIFI)) focus_note_wifi(fsubtype, payload, length, rssi);
+    focus_note_peer(false, payload, length, rssi);
 
     if (fsubtype == 8) scope_feed(rxCh, rssi);   // beacons only, as v3.2
 
@@ -305,6 +312,15 @@ void scanner_wifi_init(const Settings& s) {
     esp_wifi_set_promiscuous_rx_cb(promisc);
     esp_wifi_set_channel(CH[0], WIFI_SECOND_CHAN_NONE);
     Serial.println("[wifi] init OK");
+}
+
+// Focus mode widens the capture to data frames (peer/traffic tallies); the
+// normal sweep stays management-only.
+void scanner_wifi_data_filter(bool on) {
+    wifi_promiscuous_filter_t f = { .filter_mask = on
+        ? (uint32_t)(WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA)
+        : (uint32_t)WIFI_PROMIS_FILTER_MASK_MGMT };
+    esp_wifi_set_promiscuous_filter(&f);
 }
 
 void scanner_wifi_tick(uint8_t* out, int lock_ch) {
