@@ -109,7 +109,11 @@
   Use a protected cell; no protection IC found on the C5 board.
 - Battery gauge: C5 reads VBAT/2 (GPIO26 enables divider, GPIO6/ADC1_CH5 reads) ->
   `batt_mv` in GET_STATUS / STATUS event. Charge state not readable (LED only).
-- None of the above has been wired or measured yet.
+- Bring-up lesson (2026-10-19): the pigtail was first in the wrong 4-pin socket (likely
+  P3, which has IO22 but no IO27), giving a one-way link. The correct socket is **CN1**
+  (GND, IO22, IO27, 3.3 V). Link is verified working on CN1 with GPIO22->C5 D10 and
+  GPIO27<-C5 D9. Still unrecorded here: the pigtail's colour order and which end of CN1
+  is pin 1.
 
 ## Vendor database
 - platformio.ini uses huge_app.csv (3 MB app, no OTA) — CHECK flash % in build output

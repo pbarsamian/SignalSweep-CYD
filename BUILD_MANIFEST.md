@@ -127,6 +127,14 @@ a deliberate choice, so verify the checks below rather than re-deriving.)
 - **Levels:** both boards are 3.3 V logic — connect directly, no level shifter.
 - **Baud:** start 115200 for bring-up, move to 921600 once framing is clean.
 
+**Three look-alike 4-pin PicoBlade sockets on the CYD** (witnessmenow PINS.md; it gives no
+physical location): **CN1** = GND, IO22, IO27, 3.3 V (use this one); **P3** = GND, IO35,
+IO22, IO21 (no IO27; IO21 is the backlight); **P1** = VIN, TX, RX, GND (serial; carries
+VIN, so never put the red wire here). Plugging the pigtail into P3 gives exactly a
+one-way link (CYD TX on IO22 works, the C5-to-CYD direction has no IO27). That mistake
+was made on the first bring-up (2026-10-19); the link came up once the pigtail was moved
+to CN1. Identify CN1 with a meter: one end pin is a steady 3.3 V, the opposite end is GND.
+
 Still verify on the physical boards before soldering: CN1 pin-1 end with a meter
 (some early CYD revisions didn't populate GPIO22 on CN1 pin 3), the pigtail's actual
 color order, and the C5 pad silkscreen. On the C5 left edge the order is
