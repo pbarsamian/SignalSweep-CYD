@@ -1,8 +1,10 @@
 Import("env")
 import shutil, glob, os
 
-src = os.path.join("config", "User_Setup.h")
-pattern = os.path.join(".pio", "libdeps", "*", "TFT_eSPI", "User_Setup.h")
+# Resolve from the project dir so this works wherever `pio` is invoked from.
+proj = env.subst("$PROJECT_DIR")
+src = os.path.join(proj, "config", "User_Setup.h")
+pattern = os.path.join(proj, ".pio", "libdeps", "*", "TFT_eSPI", "User_Setup.h")
 matches = glob.glob(pattern)
 if matches:
     for dst in matches:

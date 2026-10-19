@@ -18,3 +18,10 @@ Thumbs.db
 # The generated vendor table is large and reproducible from tools/.
 # Comment the next line out if you prefer to commit it for offline users.
 include/vendor_db_data.h
+
+# Split architecture build outputs
+firmware-c5/build/
+firmware-c5/sdkconfig
+firmware-c5/sdkconfig.old
+firmware-c5/managed_components/
+firmware-c5/dependencies.lock

@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// dispatch.c — opcode -> handler, with the C5's own gate in front of every op.
+//
+// Invariants enforced here (BUILD_MANIFEST.md section 4):
+//   2. Boot silent: the shadow starts invalid (treated as SILENT_RX).
+//   4. Fail safe: a stale or unknown shadow refuses ACTIVE ops. The shadow goes
+//      stale if the CYD is silent for SS_SHADOW_STALE_MS.
+//   5. Token per op: ACTIVE ops need a valid, fresh, single-use token.
+//   7. PASSIVE means passive: nothing in this file transmits RF.
+// M2 scope: HELLO / SET_MODE / GET_STATUS are real; SCAN_WIFI / SCAN_BLE return
+// CANNED data (flagged "canned":true); everything else that passes the gate
+// answers SS_ERR_UNIMPL until its milestone lands.
+#include "dispatch.h"
+#include <string.h>
+#include "esp_timer.h"
+#include "esp_log.h"
+#include "ss_protocol.h"
+#include "ss_capabilities.h"
+#include "ss_cbor.h"
+#include "ss_token.h"
+#include "uart_slave.h"
+#include "battery.h"
+#include "tx_slots.h"
+
+static const char* TAG = "dispatch";
+#define FW_NAME "c5-m2"
+
+static struct {
+    bool      valid;                              // a HELLO has established this shadow
+    ss_mode_t mode;
+    uint32_t  last_rx_ms;                         // last valid frame from the CYD
+    bool      have_secret;
+    uint8_t   secret[SS_SESSION_SECRET_LEN];
+    int32_t   clk_offset;                         // CYD clock minus our clock, from HELLO
+    uint32_t  last_evt_ms;
+    bool      low_reported;
+} S;
+
+static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+// Mode the gate must use right now. Latches to silent when the shadow goes stale.
+static ss_mode_t effective_mode(uint32_t now) {
+    if (S.valid && (now - S.last_rx_ms) > SS_SHADOW_STALE_MS) {
+        S.valid = false;
+        S.mode = SS_MODE_SILENT_RX;
+        S.have_secret = false;
+        memset(S.secret, 0, sizeof(S.secret));
+        ESP_LOGW(TAG, "mode shadow went stale -> SILENT_RX, session dropped");
+    }
+    return S.valid ? S.mode : SS_MODE_SILENT_RX;
+}
+
+void dispatch_init(void) {
+    memset(&S, 0, sizeof(S));
+    S.mode = SS_MODE_SILENT_RX;
+}
+
+// RESP payload = [status][CBOR result]
+static void send_resp(uint8_t seq, uint8_t status, const uint8_t* cbor, size_t n) {
+    static uint8_t buf[SS_MAX_PAYLOAD];
+    if (n > sizeof(buf) - 1) { status = SS_ERR_BUSY; n = 0; }
+    buf[0] = status;
+    if (n) memcpy(buf + 1, cbor, n);
+    uart_slave_send(SS_T_RESP, seq, 0, buf, (uint16_t)(n + 1));
+}
+
+static void send_status_event(void) {
+    uint8_t b[96];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b + 1, sizeof(b) - 1);
+    uint16_t mv = battery_mv();
+    ss_cbor_map(&w, 3);
+    ss_cbor_kv_uint(&w, "batt_mv", mv);
+    ss_cbor_kv_bool(&w, "batt_low", mv && mv <= SS_BATT_LOW_MV);
+    ss_cbor_kv_uint(&w, "mode_shadow", S.valid ? S.mode : SS_MODE_SILENT_RX);
+    if (w.err) return;
+    b[0] = SS_EVT_STATUS;
+    uart_slave_send(SS_T_EVENT, 0, 0, b, (uint16_t)(w.len + 1));
+}
+
+// ---- control ops ------------------------------------------------------------
+static void op_hello(uint8_t seq, const uint8_t* a, size_t n) {
+    uint32_t ver = 0, t_ms = 0;
+    uint8_t secret[SS_SESSION_SECRET_LEN];
+    if (!ss_cbor_get_uint(a, n, "ver", &ver) || !ss_cbor_get_uint(a, n, "t_ms", &t_ms) ||
+        !ss_cbor_get_bytes(a, n, "secret", secret, sizeof(secret))) {
+        send_resp(seq, SS_ERR_BADFRAME, NULL, 0);
+        return;
+    }
+    if (ver != SS_PROTO_VERSION) { send_resp(seq, SS_ERR_VERSION, NULL, 0); return; }
+
+    memcpy(S.secret, secret, sizeof(S.secret));
+    memset(secret, 0, sizeof(secret));
+    S.have_secret = true;
+    S.valid = true;
+    S.mode = SS_MODE_SILENT_RX;                   // every new session starts silent
+    S.clk_offset = (int32_t)(t_ms - now_ms());    // lets us judge token freshness on the CYD clock
+    S.low_reported = false;
+    ss_token_reset_replay_window();
+
+    uint8_t b[64];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    ss_cbor_map(&w, 4);
+    ss_cbor_kv_uint(&w, "ver", SS_PROTO_VERSION);
+    ss_cbor_kv_text(&w, "fw", FW_NAME);
+    ss_cbor_kv_uint(&w, "t_ms", now_ms());
+    ss_cbor_kv_uint(&w, "mode", SS_MODE_SILENT_RX);
+    send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
+    ESP_LOGI(TAG, "HELLO ok, session started, shadow SILENT_RX");
+}
+
+static void op_set_mode(uint8_t seq, const uint8_t* a, size_t n) {
+    uint32_t m = 0;
+    if (!S.valid) { send_resp(seq, SS_ERR_MODE, NULL, 0); return; }   // no session: HELLO first
+    if (!ss_cbor_get_uint(a, n, "mode", &m) || m > SS_MODE_TX_DETECTABLE) {
+        send_resp(seq, SS_ERR_BADFRAME, NULL, 0);
+        return;
+    }
+    S.mode = (ss_mode_t)m;
+    ESP_LOGI(TAG, "SET_MODE -> %s", m ? "TX_DETECTABLE" : "SILENT_RX");
+    send_resp(seq, SS_OK, NULL, 0);
+}
+
+static void op_get_status(uint8_t seq) {
+    uint32_t now = now_ms();
+    ss_mode_t eff = effective_mode(now);          // may latch the shadow invalid first
+    uint8_t b[96];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    uint16_t mv = battery_mv();
+    ss_cbor_map(&w, 6);
+    ss_cbor_kv_uint(&w, "mode", eff);
+    ss_cbor_kv_bool(&w, "valid", S.valid);
+    ss_cbor_kv_uint(&w, "up_ms", now);
+    ss_cbor_kv_uint(&w, "q", 0);
+    ss_cbor_kv_uint(&w, "batt_mv", mv);
+    ss_cbor_kv_bool(&w, "batt_low", mv && mv <= SS_BATT_LOW_MV);
+    send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
+}
+
+// ---- canned PASSIVE results (M2 only; replaced by real scans in M3) ----------
+static void op_scan_wifi_canned(uint8_t seq) {
+    uint8_t b[256];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    ss_cbor_map(&w, 2);
+    ss_cbor_kv_bool(&w, "canned", true);
+    ss_cbor_text(&w, "aps"); ss_cbor_array(&w, 2);
+    ss_cbor_map(&w, 4);
+    ss_cbor_kv_text(&w, "ssid", "CANNED-2G"); ss_cbor_kv_uint(&w, "ch", 6);
+    ss_cbor_kv_int(&w, "rssi", -55);          ss_cbor_kv_text(&w, "band", "2g");
+    ss_cbor_map(&w, 4);
+    ss_cbor_kv_text(&w, "ssid", "CANNED-5G"); ss_cbor_kv_uint(&w, "ch", 36);
+    ss_cbor_kv_int(&w, "rssi", -61);          ss_cbor_kv_text(&w, "band", "5g");
+    send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
+}
+
+static void op_scan_ble_canned(uint8_t seq) {
+    uint8_t b[192];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    ss_cbor_map(&w, 2);
+    ss_cbor_kv_bool(&w, "canned", true);
+    ss_cbor_text(&w, "devs"); ss_cbor_array(&w, 1);
+    ss_cbor_map(&w, 3);
+    ss_cbor_kv_text(&w, "mac", "AA:BB:CC:00:11:22");
+    ss_cbor_kv_text(&w, "name", "CANNED-BLE");
+    ss_cbor_kv_int(&w, "rssi", -70);
+    send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
+}
+
+// ---- entry ------------------------------------------------------------------
+void dispatch_handle(const ss_frame_t* f) {
+    uint32_t now = now_ms();
+    if (f->type != SS_T_REQ) return;              // only REQs are answered
+    S.last_rx_ms = now;                           // any valid frame proves the CYD is alive
+
+    if (f->len < 1) { send_resp(f->seq, SS_ERR_BADFRAME, NULL, 0); return; }
+    uint8_t op = f->payload[0];
+    const uint8_t* p = f->payload + 1;
+    size_t n = f->len - 1;
+    const uint8_t* token = NULL;
+    if (f->flags & SS_FLAG_HAS_TOKEN) {
+        if (n < SS_TOKEN_WIRE_LEN) { send_resp(f->seq, SS_ERR_BADFRAME, NULL, 0); return; }
+        token = p; p += SS_TOKEN_WIRE_LEN; n -= SS_TOKEN_WIRE_LEN;
+    }
+
+    // Control ops: no class, no token
+    if (op == SS_OP_HELLO)      { op_hello(f->seq, p, n); return; }
+    if (op == SS_OP_SET_MODE)   { op_set_mode(f->seq, p, n); return; }
+    if (op == SS_OP_GET_STATUS) { op_get_status(f->seq); return; }
+
+    // Everything else is a registry capability and goes through the gate
+    const ss_cap_t* c = ss_cap_find((ss_opcode_t)op);
+    if (!c) { send_resp(f->seq, SS_ERR_OPCODE, NULL, 0); return; }
+
+    bool token_valid = false;
+    if (c->requires_token && token && S.have_secret) {
+        // Judge freshness on the CYD's clock: our clock plus the HELLO offset.
+        token_valid = ss_token_verify(token, (ss_opcode_t)op, now + (uint32_t)S.clk_offset, S.secret) == SS_OK;
+    }
+    ss_err_t g = ss_cap_check((ss_opcode_t)op, effective_mode(now), token_valid);
+    if (g != SS_OK) {
+        ESP_LOGI(TAG, "%s refused: err=%d", c->id, (int)g);
+        send_resp(f->seq, (uint8_t)g, NULL, 0);
+        return;
+    }
+
+    switch (op) {
+    case SS_OP_SCAN_WIFI: op_scan_wifi_canned(f->seq); return;
+    case SS_OP_SCAN_BLE:  op_scan_ble_canned(f->seq);  return;
+    case SS_OP_TX_SLOT_A: case SS_OP_TX_SLOT_B: case SS_OP_TX_SLOT_C: case SS_OP_TX_SLOT_D:
+        send_resp(f->seq, (uint8_t)tx_slot_run((ss_opcode_t)op, p, n), NULL, 0);
+        return;
+    default:
+        send_resp(f->seq, SS_ERR_UNIMPL, NULL, 0);   // gate passed, handler lands in a later milestone
+        return;
+    }
+}
+
+void dispatch_tick(void) {
+    uint32_t now = now_ms();
+    (void)effective_mode(now);                    // lets the shadow go stale even with no traffic
+    if (!S.valid) return;
+    uint16_t mv = battery_mv();
+    bool low = mv && mv <= SS_BATT_LOW_MV;
+    if ((low && !S.low_reported) || (now - S.last_evt_ms) >= 10000) {
+        S.last_evt_ms = now;
+        S.low_reported = low;
+        send_status_event();
+    }
+}

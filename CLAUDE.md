@@ -6,6 +6,23 @@
 
 ---
 
+## CURRENT REPO STATE (read this first)
+
+`main` is the **split architecture**: `shared/` (frozen contract, compiled into both
+firmwares), `firmware-cyd/` (control plane + HMI, PlatformIO/Arduino), `firmware-c5/`
+(the radio, ESP-IDF >= 5.5, target esp32c5). Read `BUILD_MANIFEST.md` (scope boundary
+in section 0 is non-negotiable), `PROTOCOL.md`, then `BRINGUP.md`. Milestone status:
+**M1 + M2 are written and compile; neither has run on hardware yet.**
+
+The standalone single-board firmware (v3.21 and earlier, everything described in the
+sections below) lives on the **`standalone` branch** / tag `standalone-v3.21`, and its
+sources are kept in `firmware-cyd/legacy/` (not built) as porting reference. Where the
+sections below say `src/` or `include/`, read `firmware-cyd/legacy/` and
+`firmware-cyd/include/`. Build commands: CYD `cd firmware-cyd && python -m platformio
+run`; C5 `. $HOME\esp\esp-idf\export.ps1; cd firmware-c5; idf.py build`.
+
+---
+
 ## What this project is
 
 A touchscreen port and expansion of **SignalSweep** (https://github.com/B0z0dcl0wn/SignalSweep,
@@ -227,8 +244,11 @@ Build order, each small enough to flash-test before the next:
 - **XIAO ESP32-C5** as a UART coprocessor for **5 GHz** coverage (CYD is 2.4-only).
   Feeds detections into the same registry; the "radio" field already distinguishes
   sources. Antenna: U.FL->SMA pigtail + dual-band duck. (C6 is NOT suitable — no
-  5 GHz.) Pin choice must avoid GPIO 22 (duplicated across connectors) and note
-  GPIO 27 has a pullup. Scanners/profiles already structured so the CYD keeps
+  5 GHz.) UART pins are now LOCKED in `BUILD_MANIFEST.md` §2 (CYD CN1 GPIO22 TX /
+  GPIO27 RX; C5 GPIO9 TX / GPIO10 RX). That deliberately uses GPIO22 and 27, so do the
+  continuity/pullup checks listed there. Power plan (single LiPo on the C5 BAT pads,
+  boost to the CYD) and battery telemetry are also in §2 — see `BUILD_MANIFEST.md`
+  and `PROTOCOL.md` for the split architecture. Scanners/profiles already structured so the CYD keeps
   sweeping 2.4 while the C5 handles 5 GHz / focused work.
 - Hunt mode could also drive a **Meshtastic relay** over UART to a Heltec node
   (Paul runs a Meshtastic mesh — serial module text mode) to push alerts over mesh.

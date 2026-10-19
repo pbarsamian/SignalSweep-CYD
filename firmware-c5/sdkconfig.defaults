@@ -1,0 +1,4 @@
+# Console and flashing on the native USB-Serial-JTAG port (USB-C). That leaves
+# UART1 free for the CYD link on GPIO9/GPIO10.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+CONFIG_FREERTOS_HZ=1000

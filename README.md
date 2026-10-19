@@ -21,6 +21,13 @@ transmits during scanning and never attempts to decrypt anything.
 > ~$15 ESP32 board with a built-in touchscreen — adding a graphical, tappable UI
 > and device-profiling features suited to a screen you can hold in your hand.
 
+> **Repository layout (changed):** `main` is now the split architecture — a CYD
+> control plane (`firmware-cyd/`), an ESP32-C5 radio (`firmware-c5/`), and a frozen
+> shared contract (`shared/`). See `BUILD_MANIFEST.md`, `PROTOCOL.md` and
+> `BRINGUP.md`. The standalone single-board firmware described below (through
+> v3.21) lives on the **`standalone` branch** and the `standalone-v3.21` tag; its
+> sources are also kept in `firmware-cyd/legacy/` as porting reference.
+
 ## What this port adds
 
 - **Touch UI** for the CYD's 320×240 resistive touchscreen: a live spectrum

@@ -1,4 +1,4 @@
-# SignalSweep CYD — Session Handoff (v3.21)
+# SignalSweep CYD — Session Handoff (split architecture M2; standalone v3.21 on `standalone` branch)
 
 ## Board: ESP32-2432S028R "Cheap Yellow Display"
 - ILI9341 (HSPI), rotation 3. **Panel colour fix (confirmed by boot test MODE 2):**
@@ -79,6 +79,29 @@
   heard transmitting, so pivoted peers don't age out and HUNT tracks them
 - BLE focus: LINKS/TRAFF state plainly that BLE connections are not observable
 - UNTESTED on hardware as of this commit (builds clean, flash 33%)
+
+## Split architecture status (main)
+- M1 (shared contract: ss_capabilities.c, ss_frame, ss_cbor, ss_token) and M2 (UART link:
+  CYD uart_link + C5 uart_slave/dispatch, canned scans) are written. Both firmwares
+  compile (CYD flash 10.9%; C5 IDF 5.5.6 esp32c5, 257 KB). Not run on hardware yet:
+  see BRINGUP.md for the flash steps and the acceptance-check table.
+- ESP-IDF v5.5.6 is installed on the dev machine at ~/esp/esp-idf (tools in
+  ~/.espressif); activate with `. $HOME\esp\esp-idf\export.ps1`.
+- CYD dev console (serial) can probe the C5 but cannot change mode or mint tokens
+  (those need the M4 pop-up and M6 consent flow).
+- Next: M3 real passive radio on the C5 (scan_sched, signatures/remote_id port).
+
+## Split architecture hardware (planned; see BUILD_MANIFEST.md / PROTOCOL.md)
+- UART link LOCKED: CYD CN1 GPIO22=TX, GPIO27=RX (Serial2) <-> XIAO C5 GPIO9=TX (D9),
+  GPIO10=RX (D10); GND common; 3.3 V red wire unpopulated. Crossover required.
+  Still to verify physically: CN1 pin-1 end / GPIO22 populated, pigtail colors.
+- Power: one LiPo -> switch -> C5 BAT pads + boost input (spliced at the battery);
+  boost 5 V -> CYD only, NEVER the C5 5V pad (charger input shares that net).
+  Charging = USB-C into the C5 (SGM40567, ~200 mA fixed per schematic Rev V1.1).
+  Use a protected cell; no protection IC found on the C5 board.
+- Battery gauge: C5 reads VBAT/2 (GPIO26 enables divider, GPIO6/ADC1_CH5 reads) ->
+  `batt_mv` in GET_STATUS / STATUS event. Charge state not readable (LED only).
+- None of the above has been wired or measured yet.
 
 ## Vendor database
 - platformio.ini uses huge_app.csv (3 MB app, no OTA) — CHECK flash % in build output
