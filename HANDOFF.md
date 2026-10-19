@@ -92,7 +92,10 @@
   logged 'link down: C5 shadow invalid' then re-HELLOd on its own. CRC errors 0.
   Bring-up diagnostics: CYD serial prints '[link] tx rx raw crc nack timeout up
   batt_mv c5mode' every 2 s; 'raw' counts every byte seen on GPIO27.
-- Battery sense read 2290 mV with the C5 on USB (see BRINGUP.md: unverified).
+- Battery sense: with NO cell attached the line floated at ~2.29 V on USB power, so the C5
+  now reports anything under SS_BATT_MIN_VALID_MV (2500) as unavailable (0, screen 'n/a').
+  With a cell attached the CYD screen showed 3.95 V (owner, 2026-10-19), so GPIO26 enable
+  + GPIO6 ADC + x2 scaling work. Not yet compared against a meter reading of the same cell.
 - ESP-IDF v5.5.6 is installed on the dev machine at ~/esp/esp-idf (tools in
   ~/.espressif); activate with `. $HOME\esp\esp-idf\export.ps1`.
 - CYD dev console (serial) can probe the C5 but cannot change mode or mint tokens

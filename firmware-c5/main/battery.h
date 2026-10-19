@@ -11,6 +11,11 @@
 #ifndef SS_BATT_SENSE
 #define SS_BATT_SENSE 1
 #endif
+// Readings below this are not a usable single LiPo cell. With no cell attached the
+// sense line floated at about 2.3 V on USB power (observed 2026-10-19), so anything
+// under the floor is reported as unavailable (0) instead of a misleading voltage.
+#define SS_BATT_MIN_VALID_MV 2500
+
 #define SS_BATT_EN_GPIO  26
 #define SS_BATT_ADC_GPIO 6
 

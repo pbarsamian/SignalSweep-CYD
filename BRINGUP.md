@@ -91,7 +91,9 @@ warning pop-up + touch-confirm (M4), and tokens need the consent flow (M6).
 
 ## 6. Known unknowns (tell me what you observe)
 
-- **Battery reading.** It uses GPIO26 to enable the divider and GPIO6 (ADC1_CH5) to
+- **Battery reading (verified plausible).** With a cell attached it read 3.95 V; with no cell it floats
+  near 2.3 V, which the firmware now reports as `n/a` (floor 2500 mV). Compare against a meter to
+  confirm accuracy. Original note: It uses GPIO26 to enable the divider and GPIO6 (ADC1_CH5) to
   read it. Those roles come from Seeed's schematic labels and are unverified. With no
   battery attached the value may read `n/a`, 0, or something odd. Set
   `SS_BATT_SENSE 0` in `firmware-c5/main/battery.h` to turn it off.

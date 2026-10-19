@@ -64,7 +64,8 @@ static uint16_t sample_mv(void) {
     int raw = sum / got, mv_pin = 0;
     if (!(s_have_cali && adc_cali_raw_to_voltage(s_cali, raw, &mv_pin) == ESP_OK))
         mv_pin = raw * 3300 / 4095;               // wiki: effective range 0-3300 mV
-    return (uint16_t)(mv_pin * 2);                // 2 x 100K divider
+    uint16_t vbat = (uint16_t)(mv_pin * 2);       // 2 x 100K divider
+    return vbat < SS_BATT_MIN_VALID_MV ? 0 : vbat; // no cell / dead cell -> unavailable
 }
 
 uint16_t battery_mv(void) {
