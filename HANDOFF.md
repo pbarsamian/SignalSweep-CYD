@@ -83,8 +83,16 @@
 ## Split architecture status (main)
 - M1 (shared contract: ss_capabilities.c, ss_frame, ss_cbor, ss_token) and M2 (UART link:
   CYD uart_link + C5 uart_slave/dispatch, canned scans) are written. Both firmwares
-  compile (CYD flash 10.9%; C5 IDF 5.5.6 esp32c5, 257 KB). Not run on hardware yet:
-  see BRINGUP.md for the flash steps and the acceptance-check table.
+  compile (CYD flash 10.9%; C5 IDF 5.5.6 esp32c5, 257 KB). **M2 VERIFIED ON HARDWARE
+  (2026-10-19):** link up, selftest 9/9 on the CYD, and every console check as
+  expected: SCAN_WIFI/BLE ok (canned), LIST -> ERR_UNIMPL, unknown op -> ERR_OPCODE,
+  bad CRC -> NACK ERR_CRC, bad version -> NACK ERR_VERSION, GATT/TX_SLOT_A in RX-ONLY
+  -> ERR_MODE, HELLO re-handshake ok. Fail-safe checks: CYD held in reset 13 s -> C5
+  logged 'mode shadow went stale' and the CYD relinked on boot; C5 hard-reset -> CYD
+  logged 'link down: C5 shadow invalid' then re-HELLOd on its own. CRC errors 0.
+  Bring-up diagnostics: CYD serial prints '[link] tx rx raw crc nack timeout up
+  batt_mv c5mode' every 2 s; 'raw' counts every byte seen on GPIO27.
+- Battery sense read 2290 mV with the C5 on USB (see BRINGUP.md: unverified).
 - ESP-IDF v5.5.6 is installed on the dev machine at ~/esp/esp-idf (tools in
   ~/.espressif); activate with `. $HOME\esp\esp-idf\export.ps1`.
 - CYD dev console (serial) can probe the C5 but cannot change mode or mint tokens

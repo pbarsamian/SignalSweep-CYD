@@ -94,7 +94,7 @@ void status_ui_draw(const StatusView& v, ss_mode_t mode) {
         line(3, 120, b, c.batt_low ? C_BAD : C_FG);
     } else line(3, 120, "Battery: n/a", C_DIM);
 
-    snprintf(b, sizeof(b), "tx %u  rx %u  rtt %ums", (unsigned)v.tx, (unsigned)v.rx, (unsigned)v.rtt_ms);
+    snprintf(b, sizeof(b), "tx %u rx %u raw %u rtt %ums", (unsigned)v.tx, (unsigned)v.rx, (unsigned)v.raw, (unsigned)v.rtt_ms);
     line(4, 144, b, C_FG);
     snprintf(b, sizeof(b), "nack %u  crc %u  timeout %u", (unsigned)v.nack, (unsigned)v.crc_err,
              (unsigned)v.timeouts);

@@ -5,8 +5,12 @@ handshakes with the C5 (HELLO), pushes the mode, then heartbeats GET_STATUS. The
 answers HELLO / SET_MODE / GET_STATUS for real and returns **canned** scan data
 (flagged `"canned":true`). No radio scanning yet (that is M3).
 
-Both firmwares were compiled clean (CYD: PlatformIO, flash 10.9%; C5: ESP-IDF 5.5.6,
-`esp32c5`, 257 KB image). **Neither has been run on hardware yet.**
+Both firmwares compiled clean (CYD: PlatformIO, flash 10.9%; C5: ESP-IDF 5.5.6,
+`esp32c5`, 257 KB image) and **passed every check in section 5 on hardware** on
+2026-10-19 (see HANDOFF.md). The CYD also prints a `[link] ...` line every 2 s on its
+serial port (frame counters, raw byte count, battery mV, C5 mode): the quickest wiring
+triage is `raw=0` (nothing arriving on GPIO27) vs `raw` climbing with `crc` rising
+(corrupt) vs `rx` rising (healthy).
 
 ## 1. Wire it (bench, no battery yet)
 

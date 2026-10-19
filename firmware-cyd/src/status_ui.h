@@ -19,7 +19,7 @@ struct C5Status {
 struct StatusView {
     const C5Status* c5;
     int   selftest_pass, selftest_total;
-    uint32_t tx, rx, nack, crc_err, timeouts, rtt_ms;
+    uint32_t tx, rx, nack, crc_err, timeouts, rtt_ms, raw;
     char  last[48];                  // last notable result (dev console / errors)
 };
 

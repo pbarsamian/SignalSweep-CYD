@@ -14,6 +14,7 @@ struct LinkStats {
     uint32_t timeouts = 0;
     uint32_t stray = 0;               // RESP with no matching REQ
     uint32_t last_rtt_ms = 0;
+    uint32_t raw_bytes = 0;           // every byte seen on the RX pin, valid or not
 };
 
 // Callbacks run from poll(). `cbor` points into link-owned buffers: copy it out

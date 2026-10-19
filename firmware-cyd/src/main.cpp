@@ -241,6 +241,16 @@ void loop() {
     view.tx = g_link.stats.tx; view.rx = g_link.stats.rx; view.nack = g_link.stats.nack;
     view.crc_err = g_link.stats.crc_err; view.timeouts = g_link.stats.timeouts;
     view.rtt_ms = g_link.stats.last_rtt_ms;
+    view.raw = g_link.stats.raw_bytes;
+    static uint32_t logged = 0;
+    if (now - logged >= 2000) {
+        logged = now;
+        Serial.printf("[link] tx=%u rx=%u raw=%u crc=%u nack=%u timeout=%u up=%d batt_mv=%u c5mode=%u\n",
+            (unsigned)g_link.stats.tx, (unsigned)g_link.stats.rx, (unsigned)g_link.stats.raw_bytes,
+            (unsigned)g_link.stats.crc_err, (unsigned)g_link.stats.nack,
+            (unsigned)g_link.stats.timeouts, (int)c5.link_up,
+            (unsigned)c5.batt_mv, (unsigned)c5.mode);
+    }
     static uint32_t drawn = 0;
     if (now - drawn >= 250) { drawn = now; status_ui_draw(view, mode_get()); }
     delay(1);

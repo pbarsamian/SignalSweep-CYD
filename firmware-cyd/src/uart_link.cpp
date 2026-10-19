@@ -103,7 +103,9 @@ void UartLink::poll() {
     if (!s_) return;
     ss_frame_t f;
     while (s_->available()) {
-        ss_parse_result_t r = ss_parser_feed(&parser_, (uint8_t)s_->read(), &f);
+        uint8_t b = (uint8_t)s_->read();
+        stats.raw_bytes++;
+        ss_parse_result_t r = ss_parser_feed(&parser_, b, &f);
         if (r == SS_PARSE_FRAME) handle_frame(f);
         else if (r == SS_PARSE_ERROR) stats.crc_err++;
     }
