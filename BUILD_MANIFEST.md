@@ -133,7 +133,9 @@ IO22, IO21 (no IO27; IO21 is the backlight); **P1** = VIN, TX, RX, GND (serial; 
 VIN, so never put the red wire here). Plugging the pigtail into P3 gives exactly a
 one-way link (CYD TX on IO22 works, the C5-to-CYD direction has no IO27). That mistake
 was made on the first bring-up (2026-10-19); the link came up once the pigtail was moved
-to CN1. Identify CN1 with a meter: one end pin is a steady 3.3 V, the opposite end is GND.
+to CN1. **On the owner's board CN1 is the socket right next to the RGB LED**
+(observed by the owner; board revisions may differ, so still confirm with a meter).
+Identify CN1 with a meter: one end pin is a steady 3.3 V, the opposite end is GND.
 
 Still verify on the physical boards before soldering: CN1 pin-1 end with a meter
 (some early CYD revisions didn't populate GPIO22 on CN1 pin 3), the pigtail's actual
