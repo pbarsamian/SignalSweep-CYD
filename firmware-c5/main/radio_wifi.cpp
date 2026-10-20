@@ -39,8 +39,13 @@ static const size_t NPLAN = sizeof(PLAN);
 
 static volatile uint8_t  s_cur_ch = 0;
 static volatile uint32_t s_sweeps = 0;
+static volatile uint8_t  s_band_rep = 2;     // the band the hop has chosen (what we report; the channel lags it by a dwell)
+static volatile bool     s_slot_mode = false;// SLICED: switch band at the start of every Wi-Fi slot
+static volatile uint16_t s_bdms = 6000;      // band dwell: how long to stay on 2.4 GHz, then on 5 GHz (0 = interleaved)
+#define N24 11                               // PLAN[0..N24-1] are the 2.4 GHz channels, the rest are 5 GHz
 static uint64_t s_bad_ch_mask = 0;           // channels the driver refused (logged once)
 static volatile bool s_enabled = false;      // radio on? (off in charge mode)
+static volatile bool s_paused = false;       // scheduler: BLE has the radio right now
 static SemaphoreHandle_t s_radio_mux;        // serialises enable/disable against the hop task
 
 // ---- AP table ------------------------------------------------------------------
@@ -388,8 +393,10 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
 // ---- channel hopping --------------------------------------------------------------
 static void hop_task(void*) {
     size_t i = 0;
+    uint32_t band_ms = 0;                                     // active time spent on the current band
     for (;;) {
         if (!s_enabled) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }  // charge mode: idle
+        if (s_paused) { vTaskDelay(pdMS_TO_TICKS(50)); continue; }       // scheduler: BLE slot
         if (focus_active()) {                                           // focus: park on the target's channel
             uint8_t fc = focus_channel();
             if (fc && fc != s_cur_ch) {
@@ -401,6 +408,10 @@ static void hop_task(void*) {
             }
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
+        }
+        if (s_bdms) {                                         // the chosen band may have been changed under us (a new Wi-Fi slot)
+            bool want5 = s_band_rep == 5, in5 = i >= N24;
+            if (want5 != in5) { i = want5 ? N24 : 0; band_ms = 0; }
         }
         uint8_t ch = PLAN[i];
         xSemaphoreTake(s_radio_mux, portMAX_DELAY);
@@ -417,7 +428,12 @@ static void hop_task(void*) {
             }
             vTaskDelay(1);
         }
-        if (++i >= NPLAN) { i = 0; s_sweeps = s_sweeps + 1; }
+        if (s_bdms) {                                         // banded: stay on one band, switch after s_bdms of scan time
+            bool in24 = i < N24;
+            band_ms += DWELL_MS;                              // paused / focused time never reaches here, so it is not counted
+            if (band_ms >= s_bdms) { band_ms = 0; i = in24 ? N24 : 0; s_band_rep = in24 ? 5 : 2; }
+            else if (++i >= (in24 ? (size_t)N24 : NPLAN)) { i = in24 ? 0 : N24; s_sweeps = s_sweeps + 1; }
+        } else if (++i >= NPLAN) { i = 0; s_sweeps = s_sweeps + 1; }
     }
 }
 
@@ -449,7 +465,7 @@ static void radio_apply(bool on) {
         f.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous_filter(&f));
         ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous_rx_cb(promisc));
-        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous(true));
+        ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous(!s_paused));
         s_enabled = true;
         ESP_LOGI(TAG, "radio ON");
     } else if (!on && s_enabled) {
@@ -468,6 +484,28 @@ void radio_wifi_set_data_filter(bool on) {
     f.filter_mask = on ? (WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA) : WIFI_PROMIS_FILTER_MASK_MGMT;
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous_filter(&f));
 }
+
+// Scheduler pause: receive off but the driver stays started, so resuming is instant. Charge mode
+// (s_enabled false) keeps the radio fully off regardless.
+void radio_wifi_set_paused(bool paused) {
+    if (paused == s_paused) return;
+    xSemaphoreTake(s_radio_mux, portMAX_DELAY);
+    if (!paused && s_paused && s_slot_mode) s_band_rep = (s_band_rep == 5) ? 2 : 5;   // a new Wi-Fi slot starts on the other band
+    s_paused = paused;
+    if (s_enabled) esp_wifi_set_promiscuous(!paused);
+    xSemaphoreGive(s_radio_mux);
+}
+
+void radio_wifi_set_band_dwell(int ms) {
+    if (ms != 0 && ms < 1000) ms = 1000;
+    if (ms > 30000) ms = 30000;
+    s_bdms = (uint16_t)ms;
+}
+
+void radio_wifi_set_slot_mode(bool on) { s_slot_mode = on; }
+
+// Focus parks on the target's channel and interleaved hopping has no chosen band: report the channel's band.
+int radio_wifi_band(void) { return (!s_bdms || focus_active()) ? (s_cur_ch >= 36 ? 5 : 2) : s_band_rep; }
 
 void radio_wifi_set_enabled(bool on) { radio_apply(on); }
 bool radio_wifi_enabled(void) { return s_enabled; }

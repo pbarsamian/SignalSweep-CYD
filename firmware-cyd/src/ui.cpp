@@ -15,6 +15,14 @@ extern uint8_t  g_backlight;
 void status_ui_reset();              // status_ui.cpp: repaint the diagnostics page from scratch
 
 UiSettings g_ui_set;
+// mode 0 = both radios run together (bpct = BLE scan window as a percent of its interval); mode 1 = sliced
+const SchedPreset SCHED_PRESETS[] = {
+    { "WI-FI",     0,  20, 4000, 2000, 6000 },
+    { "BALANCED",  0,  50, 4000, 2000, 6000 },     // BLE window as before the scheduler; Wi-Fi now dwells 6 s per band
+    { "BLE",       0,  80, 4000, 2000, 6000 },
+    { "SLICED",    1,  50, 4000, 2000, 6000 },
+};
+const int SCHED_N = (int)(sizeof(SCHED_PRESETS) / sizeof(SCHED_PRESETS[0]));
 static UiCallbacks s_cb = {};
 static Preferences s_prefs;
 
@@ -26,7 +34,10 @@ static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
 static int      s_set_page = 0;          // 0 alerts, 1 device
 static int      s_scroll = 0;            // LIST / INFO scroll offset
 static int      s_sub = 0;               // INFO sub-page: 0 INFO, 1 LINKS, 2 TRAFF, 3 RAW, 4 HUNT
-static int      s_scope_band = 2;        // 2 = 2.4 GHz, 5 = 5 GHz, 0 = BLE
+#define SC_AUTO 3                         // scope follows what the C5 is scanning
+static int      s_scope_pref = SC_AUTO;  // what the band button selects: 2, 5, 0 or SC_AUTO
+static int      s_scope_band = 2;        // what is shown now: 2 = 2.4 GHz, 5 = 5 GHz, 0 = BLE
+static uint8_t  s_scan = 3, s_lock = 0;  // the C5's radio state (1 Wi-Fi, 2 BLE, 3 both) and focus lock
 static uint32_t s_drawn_ms = 0;
 static char     s_sel_mac[18] = {};
 static bool     s_have_sel = false;
@@ -69,6 +80,8 @@ static void settings_load() {
     g_ui_set.speaker = s_prefs.getBool("spk", true);
     g_ui_set.led = s_prefs.getBool("led", true);
     g_ui_set.brightness = s_prefs.getUChar("bri", 200);
+    g_ui_set.sched = s_prefs.getUChar("sch", 1);
+    if (g_ui_set.sched >= SCHED_N) g_ui_set.sched = 1;
     s_prefs.end();
     if (g_ui_set.brightness < 25) g_ui_set.brightness = 25;
 }
@@ -79,6 +92,7 @@ static void settings_save() {
     s_prefs.putBool("spk", g_ui_set.speaker);
     s_prefs.putBool("led", g_ui_set.led);
     s_prefs.putUChar("bri", g_ui_set.brightness);
+    s_prefs.putUChar("sch", g_ui_set.sched);
     s_prefs.end();
 }
 
@@ -243,38 +257,39 @@ static const char* company_name(uint16_t id) {
 
 const char* company_name_ui(uint16_t id) { return company_name(id); }
 
-static void draw_ble_canvas(int sx, int sy, int sw, int sh) {
-    tft.fillRect(sx, sy, sw, sh, C_BLACK);
-    tft.drawRect(sx, sy, sw, sh, C_BORDER);
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(C_MDGREY, C_BLACK);
+template <class G>
+static void draw_ble_canvas(G& g, int sx, int sy, int sw, int sh) {
+    g.fillRect(sx, sy, sw, sh, C_BLACK);
+    g.drawRect(sx, sy, sw, sh, C_BORDER);
+    g.setTextDatum(ML_DATUM);
+    g.setTextColor(C_MDGREY, C_BLACK);
     char hdr[48];
     snprintf(hdr, sizeof(hdr), "BLE (passive): %d heard", (int)g_model.ble_total);
-    tft.drawString(hdr, sx + 4, sy + 8, 1);
+    g.drawString(hdr, sx + 4, sy + 8, 1);
     int rows = (sh - 18) / 11;                       // 8 px font + 3 px gap
     for (int i = 0; i < rows && i < g_model.nble; i++) {
         const BleRow& r = g_model.ble[i];
         int y = sy + 18 + i * 11;
         int w = (int)(((r.rssi + 100) / 60.0f) * 60.0f); w = w < 2 ? 2 : w > 60 ? 60 : w;
-        tft.fillRect(sx + 3, y, w, 8, C_SIGNAL);
-        tft.fillRect(sx + 3 + w, y, 60 - w, 8, C_PANEL);
+        g.fillRect(sx + 3, y, w, 8, C_SIGNAL);
+        g.fillRect(sx + 3 + w, y, 60 - w, 8, C_PANEL);
         char label[40];
         const char* who = r.name[0] ? r.name : (r.has_company ? company_name(r.company) : nullptr);
         if (who) snprintf(label, sizeof(label), "%s", who);
         else if (r.has_company) snprintf(label, sizeof(label), "co 0x%04X", r.company);
         else snprintf(label, sizeof(label), "%s", r.mac + 9);          // last 3 octets
-        tft.setTextColor(C_WHITE, C_BLACK);
-        tft.drawString(label, sx + 68, y + 4, 1);
+        g.setTextColor(C_WHITE, C_BLACK);
+        g.drawString(label, sx + 68, y + 4, 1);
         char rb[8]; snprintf(rb, sizeof(rb), "%d", r.rssi);
-        tft.setTextDatum(MR_DATUM);
-        tft.setTextColor(C_LTGREY, C_BLACK);
-        tft.drawString(rb, sx + sw - 4, y + 4, 1);
-        tft.setTextDatum(ML_DATUM);
+        g.setTextDatum(MR_DATUM);
+        g.setTextColor(C_LTGREY, C_BLACK);
+        g.drawString(rb, sx + sw - 4, y + 4, 1);
+        g.setTextDatum(ML_DATUM);
     }
     if (g_model.nble == 0) {
-        tft.setTextColor(C_MDGREY, C_BLACK);
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString("listening... (names need a scan response; passive scan can't ask)", sx + sw / 2, sy + sh / 2 + 6, 1);
+        g.setTextColor(C_MDGREY, C_BLACK);
+        g.setTextDatum(MC_DATUM);
+        g.drawString("listening... (names need a scan response; passive scan can't ask)", sx + sw / 2, sy + sh / 2 + 6, 1);
     }
 }
 
@@ -326,34 +341,31 @@ static void draw_ap_rows(int sy, int sh) {
     }
 }
 
-static void draw_scope() {
-    const int LMARGIN = 24, RMARGIN = 6;
-    int sy = PAGE_Y + 1, sh = 84, sx = LMARGIN, sw = SCREEN_W - LMARGIN - RMARGIN;
+// The scope canvas is drawn off-screen and pushed to the panel in one go. Drawing it straight onto the panel
+// (clear, then redraw) made the whole scope, and the band pill most of all, flash on every refresh.
+// Falls back to direct drawing if the 48 KB sprite cannot be allocated.
+static TFT_eSprite s_cv(&tft);
+static bool s_cv_ok = false, s_cv_tried = false;
 
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextColor(C_WHITE, C_BLACK);
-    const char* db[] = { "-40", "-55", "-70", "-85", "-100" };
-    for (int i = 0; i < 5; i++) tft.drawString(db[i], LMARGIN - 2, sy + (i * (sh - 1)) / 4, 1);
-
-    tft.fillRect(sx, sy, sw, sh, C_BLACK);
-    tft.drawRect(sx, sy, sw, sh, C_BORDER);
-    for (int i = 1; i < 4; i++) tft.drawFastHLine(sx + 1, sy + (i * sh) / 4, sw - 2, C_GRID);
+// Everything inside the canvas border: grid, bars or BLE list, the band pill. (sx, sy) is the canvas
+// origin in the target's own coordinates (0,0 for the sprite, the real position for the panel).
+template <class G>
+static void scope_canvas(G& g, int sx, int sy, int sw, int sh) {
+    g.fillRect(sx, sy, sw, sh, C_BLACK);
+    g.drawRect(sx, sy, sw, sh, C_BORDER);
 
     // Strength: -100 dBm -> 0, -40 dBm -> 80 (the standalone scope's mapping)
     auto strength = [](int rssi) { int v = (int)(((rssi + 100) / 60.0f) * 80.0f); return v < 0 ? 0 : v > 80 ? 80 : v; };
 
     if (s_scope_band == 0) {
-        draw_ble_canvas(sx, sy, sw, sh);
-        int ya = sy + sh + 1;
-        tft.setTextColor(C_MDGREY, C_BLACK);
-        tft.setTextDatum(ML_DATUM);
-        tft.drawString("Ch", 0, ya + 3, 1);
+        draw_ble_canvas(g, sx, sy, sw, sh);
     } else if (s_scope_band == 2) {
+        for (int i = 1; i < 4; i++) g.drawFastHLine(sx + 1, sy + (i * sh) / 4, sw - 2, C_GRID);
         static uint8_t pow24[320];
         memset(pow24, 0, sizeof(pow24));
         for (int ch = 1; ch <= 11; ch++) {                       // channel guide lines
             int xp = sx + ((ch - 1) * (sw - 1)) / 10;
-            tft.drawFastVLine(xp, sy + 1, sh - 2, C_GRID);
+            g.drawFastVLine(xp, sy + 1, sh - 2, C_GRID);
         }
         for (int i = 0; i < g_model.naps; i++) {                 // a tapered hump per AP
             const ApRow& a = g_model.aps[i];
@@ -371,23 +383,12 @@ static void draw_scope() {
             int h = (v * (sh - 4)) / 100;
             if (h > 0) {
                 int top_h = h / 2 + 1, bot_h = h - top_h, top_y = sy + sh - 2 - h;
-                tft.drawFastVLine(sx + x, top_y, top_h, C_SIGNAL);
-                if (bot_h > 0) tft.drawFastVLine(sx + x, top_y + top_h, bot_h, C_SIGNAL2);
+                g.drawFastVLine(sx + x, top_y, top_h, C_SIGNAL);
+                if (bot_h > 0) g.drawFastVLine(sx + x, top_y + top_h, bot_h, C_SIGNAL2);
             }
         }
-        int ya = sy + sh + 1;
-        tft.setTextColor(C_LTGREY, C_BLACK);
-        tft.setTextDatum(ML_DATUM);
-        tft.drawString("Ch", 0, ya + 3, 1);
-        tft.setTextDatum(TC_DATUM);
-        for (int ch = 1; ch <= 11; ch++) {
-            int xp = sx + ((ch - 1) * (sw - 1)) / 10;
-            tft.drawFastVLine(xp, sy + sh, 4, C_LTGREY);
-            char cb[4]; snprintf(cb, sizeof(cb), "%d", ch);
-            tft.setTextColor(C_WHITE, C_BLACK);
-            tft.drawString(cb, xp, ya + 4, 1);
-        }
     } else {
+        for (int i = 1; i < 4; i++) g.drawFastHLine(sx + 1, sy + (i * sh) / 4, sw - 2, C_GRID);
         int slot = sw / N5;                                      // 25 five-GHz channels, one bar each
         static uint8_t pow5[N5];
         memset(pow5, 0, sizeof(pow5));
@@ -399,17 +400,66 @@ static void draw_scope() {
         }
         for (int k = 0; k < N5; k++) {
             int x = sx + 1 + k * slot;
-            tft.drawFastVLine(x - 1, sy + 1, sh - 2, C_GRID);
+            g.drawFastVLine(x - 1, sy + 1, sh - 2, C_GRID);
             int h = (pow5[k] * (sh - 4)) / 80;
             if (h > 0) {
                 int top_h = h / 2 + 1, bot_h = h - top_h, top_y = sy + sh - 2 - h;
-                tft.fillRect(x + 1, top_y, slot - 3, top_h, C_SIGNAL);
-                if (bot_h > 0) tft.fillRect(x + 1, top_y + top_h, slot - 3, bot_h, C_SIGNAL2);
+                g.fillRect(x + 1, top_y, slot - 3, top_h, C_SIGNAL);
+                if (bot_h > 0) g.fillRect(x + 1, top_y + top_h, slot - 3, bot_h, C_SIGNAL2);
             }
         }
-        int ya = sy + sh + 1;
+    }
+
+    // Band selector: tap to switch (inside the canvas, top right)
+    g.fillRect(sx + sw - 58, sy + 2, 56, 13, C_PANEL);
+    g.drawRect(sx + sw - 58, sy + 2, 56, 13, C_ACCENT);
+    g.setTextColor(C_ACCENT, C_PANEL);
+    g.setTextDatum(MC_DATUM);
+    g.drawString(s_scope_pref == SC_AUTO ? "AUTO" : s_scope_band == 2 ? "2.4 GHz" : s_scope_band == 5 ? "5 GHz" : "BLE", sx + sw - 30, sy + 9, 1);
+    if (s_scope_band != 0 && g_model.naps == 0) {
+        g.setTextColor(C_MDGREY, C_BLACK);
+        g.drawString("waiting for C5 scan data...", sx + sw / 2 - 20, sy + sh / 2, 1);
+    }
+}
+
+static void draw_scope() {
+    const int LMARGIN = 24, RMARGIN = 6;
+    int sy = PAGE_Y + 1, sh = 84, sx = LMARGIN, sw = SCREEN_W - LMARGIN - RMARGIN;
+
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(C_WHITE, C_BLACK);
+    const char* db[] = { "-40", "-55", "-70", "-85", "-100" };
+    for (int i = 0; i < 5; i++) tft.drawString(db[i], LMARGIN - 2, sy + (i * (sh - 1)) / 4, 1);
+
+    if (!s_cv_tried) {
+        s_cv_tried = true;
+        s_cv.setColorDepth(16);
+        s_cv_ok = s_cv.createSprite(sw, sh) != nullptr;
+        Serial.printf("[ui] scope sprite %s (free heap %u)\n", s_cv_ok ? "ok" : "FAILED, drawing direct", (unsigned)ESP.getFreeHeap());
+    }
+    if (s_cv_ok) { scope_canvas(s_cv, 0, 0, sw, sh); s_cv.pushSprite(sx, sy); }
+    else scope_canvas(tft, sx, sy, sw, sh);
+
+    // Axis labels under the canvas (outside it, so drawn straight to the panel in place)
+    int ya = sy + sh + 1;
+    tft.setTextDatum(ML_DATUM);
+    if (s_scope_band == 0) {
+        tft.setTextColor(C_MDGREY, C_BLACK);
+        tft.drawString("Ch", 0, ya + 3, 1);
+    } else if (s_scope_band == 2) {
         tft.setTextColor(C_LTGREY, C_BLACK);
-        tft.setTextDatum(ML_DATUM);
+        tft.drawString("Ch", 0, ya + 3, 1);
+        tft.setTextDatum(TC_DATUM);
+        for (int ch = 1; ch <= 11; ch++) {
+            int xp = sx + ((ch - 1) * (sw - 1)) / 10;
+            tft.drawFastVLine(xp, sy + sh, 4, C_LTGREY);
+            char cb[4]; snprintf(cb, sizeof(cb), "%d", ch);
+            tft.setTextColor(C_WHITE, C_BLACK);
+            tft.drawString(cb, xp, ya + 4, 1);
+        }
+    } else {
+        int slot = sw / N5;
+        tft.setTextColor(C_LTGREY, C_BLACK);
         tft.drawString("Ch", 0, ya + 3, 1);
         tft.setTextDatum(TC_DATUM);
         for (int k = 0; k < N5; k += 3) {
@@ -420,20 +470,20 @@ static void draw_scope() {
             tft.drawString(cb, x, ya + 4, 1);
         }
     }
-
-    // Band selector: tap to switch (inside the canvas, top right)
-    tft.fillRect(sx + sw - 58, sy + 2, 56, 13, C_PANEL);
-    tft.drawRect(sx + sw - 58, sy + 2, 56, 13, C_ACCENT);
-    tft.setTextColor(C_ACCENT, C_PANEL);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(s_scope_band == 2 ? "2.4 GHz" : s_scope_band == 5 ? "5 GHz" : "BLE", sx + sw - 30, sy + 9, 1);
-    if (s_scope_band != 0 && g_model.naps == 0) {
-        tft.setTextColor(C_MDGREY, C_BLACK);
-        tft.drawString("waiting for C5 scan data...", sx + sw / 2 - 20, sy + sh / 2, 1);
-    }
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(s_scope_band == 2 ? "2.4 GHz channels" : s_scope_band == 5 ? "5 GHz channels" : "BLE devices, strongest first", sx + sw / 2, sy + sh + 22, 1);
+    {                                                         // caption: what is shown | what the C5 is doing
+        char how[24];
+        if (s_lock == 1) snprintf(how, sizeof(how), "FOCUS Wi-Fi");
+        else if (s_lock == 2) snprintf(how, sizeof(how), "FOCUS BLE");
+        else if (SCHED_PRESETS[g_ui_set.sched < SCHED_N ? g_ui_set.sched : 1].mode == 1)
+            snprintf(how, sizeof(how), "SLICED: %s slot", s_scan == 2 ? "BLE" : "Wi-Fi");
+        else snprintf(how, sizeof(how), "%s", SCHED_PRESETS[g_ui_set.sched < SCHED_N ? g_ui_set.sched : 1].name);
+        char cap[56];
+        snprintf(cap, sizeof(cap), "%s  |  %s", s_scope_band == 2 ? "2.4 GHz channels" : s_scope_band == 5 ? "5 GHz channels" : "BLE devices", how);
+        tft.fillRect(0, sy + sh + 17, SCREEN_W, 12, C_BLACK);
+        tft.drawString(cap, sx + sw / 2, sy + sh + 22, 1);
+    }
 
     if (s_scope_band != 0) { draw_ap_rows(sy, sh); return; }
 
@@ -1161,11 +1211,9 @@ static void draw_set(const UiCtx& c) {
             int col = (i < 4) ? 0 : 1, row = (i < 4) ? i : (i - 4);
             draw_toggle(col * 162 + 2, PAGE_Y + SET_SEG_H + 4 + row * 42, 158, 38, TILE_LABEL[i], TILE_SUB[i], tile_value(i));
         }
-        tft.fillRect(164, PAGE_Y + SET_SEG_H + 4 + 3 * 42, 154, 38, C_BLACK);
-        tft.setTextColor(C_MDGREY, C_BLACK);
-        tft.setTextDatum(ML_DATUM);
-        tft.drawString("Detection types are", 168, PAGE_Y + SET_SEG_H + 4 + 3 * 42 + 10, 1);
-        tft.drawString("applied on the C5.", 168, PAGE_Y + SET_SEG_H + 4 + 3 * 42 + 22, 1);
+        char sl[24];
+        snprintf(sl, sizeof(sl), "SCAN: %s", SCHED_PRESETS[g_ui_set.sched].name);
+        draw_button(164, PAGE_Y + SET_SEG_H + 4 + 3 * 42, 154, 38, sl, C_ACCENT);   // tap: next Wi-Fi / BLE balance
         return;
     }
     // DEVICE page
@@ -1217,6 +1265,20 @@ void ui_update(const UiCtx& c) {
     uint32_t now = millis();
     alert_tick(now);
     model_prune(now);
+    s_scan = c.c5->link_up ? c.c5->scan : 3;
+    s_lock = c.c5->link_up ? c.c5->lock : 0;
+    if (s_scope_pref == SC_AUTO && c.c5->link_up) {          // the scope follows what is actually being scanned
+        int want;
+        if (s_scan == 2) want = 0;                            // BLE has the radio: the BLE list
+        else if (s_scan == 1) want = c.c5->band == 5 ? 5 : 2; // Wi-Fi alone (a slot, or a focus lock): the band it is on
+        else {                                                // both run together: rotate 2.4 -> 5 -> BLE, 6 s each
+            static uint32_t rot_ms = 0;
+            static int rot = 0;
+            if (now - rot_ms >= 6000) { rot_ms = now; rot = (rot + 1) % 3; }
+            want = rot == 0 ? 2 : rot == 1 ? 5 : 0;
+        }
+        if (want != s_scope_band) { s_scope_band = want; if (s_tab == TAB_SCOPE) s_dirty = true; }
+    }
 
     if (s_diag) {                                   // full-screen bring-up page
         if (now - s_drawn_ms >= 250) { s_drawn_ms = now; status_ui_draw(*c.diag, c.mode); }
@@ -1264,7 +1326,12 @@ void ui_touch(int tx, int ty) {
         return;
     }
     if (s_tab == TAB_SCOPE) {
-        if (in_rect(tx, ty, SCREEN_W - 6 - 58, PAGE_Y + 3, 60, 16)) { s_scope_band = (s_scope_band == 2) ? 5 : (s_scope_band == 5) ? 0 : 2; s_dirty = true; return; }
+        if (in_rect(tx, ty, SCREEN_W - 6 - 58, PAGE_Y + 3, 60, 16)) {      // AUTO -> 2.4 -> 5 -> BLE -> AUTO
+            s_scope_pref = (s_scope_pref == SC_AUTO) ? 2 : (s_scope_pref == 2) ? 5 : (s_scope_pref == 5) ? 0 : SC_AUTO;
+            if (s_scope_pref != SC_AUTO) s_scope_band = s_scope_pref;
+            s_dirty = true;
+            return;
+        }
         // tap a detection row under the scope: open it
         int ry0 = PAGE_Y + 1 + 84 + 32;
         if (ty >= ry0 && s_scope_band != 0) {                  // an access point row: open it and focus it
@@ -1337,6 +1404,13 @@ void ui_touch(int tx, int ty) {
             return;
         }
         if (s_set_page == 0) {
+            if (in_rect(tx, ty, 164, PAGE_Y + SET_SEG_H + 4 + 3 * 42, 154, 38)) {     // scan balance
+                g_ui_set.sched = (uint8_t)((g_ui_set.sched + 1) % SCHED_N);
+                settings_save();
+                if (s_cb.settings_changed) s_cb.settings_changed();
+                s_dirty = true;
+                return;
+            }
             for (int i = 0; i < 7; i++) {
                 int col = (i < 4) ? 0 : 1, row = (i < 4) ? i : (i - 4);
                 if (!in_rect(tx, ty, col * 162 + 2, PAGE_Y + SET_SEG_H + 4 + row * 42, 158, 38)) continue;

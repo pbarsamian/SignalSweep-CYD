@@ -15,4 +15,8 @@ bool     radio_wifi_enabled(void);
 bool     radio_wifi_encode_aps(ss_cbor_w_t* w);
 void     radio_wifi_log_stats(void);             // one summary line on the console
 uint32_t radio_wifi_ap_count(void);
+void     radio_wifi_set_band_dwell(int ms);      // hop one band for this long (1000..30000 ms), then the other; 0 = one interleaved sweep
+int      radio_wifi_band(void);                  // 2 or 5: the band being scanned (the one the hop has chosen)
+void     radio_wifi_set_slot_mode(bool on);      // scheduler SLICED: each Wi-Fi slot stays on one band and the next slot takes the other
+void     radio_wifi_set_paused(bool paused);     // scheduler: promiscuous receive off/on (driver stays up)
 void     radio_wifi_set_data_filter(bool on);    // focus mode: also receive data-frame headers

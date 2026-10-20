@@ -101,7 +101,7 @@ A RESP payload is `[STATUS u8][ CBOR map of result ]`.
 |--------|------|-------|-------|
 | 0x01 | `HELLO` | — | handshake, exchanges session secret + versions |
 | 0x02 | `SET_MODE` | — | CYD pushes authoritative mode to C5 shadow |
-| 0x05 | `SET_CONFIG` | — | detection-type toggles `{drone,tracker,camera,bodycam,attack: bool}`; the CYD pushes its saved settings after every HELLO; a type switched off is dropped from the C5 registry |
+| 0x05 | `SET_CONFIG` | — | detection-type toggles `{drone,tracker,camera,bodycam,attack: bool}` and the scan scheduler `{smode,bpct,wms,bms}` (§3b-4); the CYD pushes its saved settings after every HELLO; a type switched off is dropped from the C5 registry |
 | 0x04 | `SET_POWER` | — | user-selected charge mode on/off; refused while forced — see §3c |
 | 0x03 | `GET_STATUS` | — | radio state, mode shadow, queue depth, battery (`batt_mv`, `batt_low`) — see §3a |
 | 0x10 | `SCAN_WIFI` | PASSIVE | listen-only; no probe requests |
@@ -215,6 +215,55 @@ n}`; `age_ms` 99999 means the target has not been heard yet. The CYD's HUNT page
 
 Limits: BLE connections hop channels and are not visible, so a BLE target has no peers. The
 "Correlated" tier of LINKS (co-travel over time) needs session history on SD and is not built.
+
+### 3b-4. Scan scheduler (`SET_CONFIG`)
+
+Wi-Fi capture and the BLE scan share the C5's one 2.4 GHz radio, so running both at once costs each
+some frames. The scheduler (`firmware-c5/main/sched.*`) decides the split. It only pauses and
+resumes receive paths; nothing transmits.
+
+`SET_CONFIG` takes four optional keys (missing keys leave a value as it was; the CYD sends all four
+after every HELLO along with the detection toggles):
+
+| key | meaning |
+|-----|---------|
+| `smode` | 0 `CONCURRENT`: both run all the time. 1 `SLICED`: the radio alternates, Wi-Fi only then BLE only |
+| `bpct` | CONCURRENT: BLE scan window as a percent of its 100 ms interval, clamped 10..90 (Wi-Fi gets the rest) |
+| `wms`, `bms` | SLICED: length of the Wi-Fi slot and the BLE slot in ms, clamped 500..30000 |
+| `bdms` | Wi-Fi band dwell: scan 2.4 GHz for this long, then 5 GHz, and so on (1000..30000 ms, default 6000). 0 = the old single interleaved sweep. Only time actually spent scanning Wi-Fi counts |
+
+Why the clamp: a 100 % BLE window starves Wi-Fi completely (0 frames measured). Blocking Wi-Fi on
+purpose is what the focus lock below is for.
+
+**Lock.** Focus mode takes the radio: a Wi-Fi focus runs Wi-Fi only (BLE paused), a BLE focus runs BLE
+only at full duty (Wi-Fi receive paused). Releasing focus hands control back to the configured mode.
+Charge mode is separate: the radios stay fully off whatever the scheduler wants.
+
+**Reporting.** `GET_STATUS` and `SS_EVT_STATUS` carry `scan` (1 Wi-Fi only, 2 BLE only, 3 both), `lock`
+(0 none, 1 Wi-Fi, 2 BLE) and `band` (2 or 5: the Wi-Fi band the hop has chosen). The C5 pushes a status
+event the moment any of them changes, so a screen can follow the radio without waiting for the heartbeat.
+In SLICED every Wi-Fi slot stays on one band and the next slot takes the other (so 2.4 GHz and 5 GHz
+alternate between BLE slots); in CONCURRENT the band follows the band dwell (`bdms`).
+
+The CYD scope's AUTO setting follows this: Wi-Fi only shows the band it is on, BLE only shows the BLE list,
+and when both run together it rotates 2.4 GHz, 5 GHz and BLE every 6 s (a timer on the CYD).
+
+Measured on hardware (per 5 s, 60 s averages, a busy BLE environment; Wi-Fi counts are noisy because the
+hop covers 36 channels, and 5 GHz is far busier than 2.4 GHz):
+
+| | `smode` / `bpct` | Wi-Fi mgmt frames | BLE adverts |
+|---|---|---|---|
+| Before the scheduler (fixed 50 % window, interleaved sweep) | - | 48.6 | 1093 |
+| BALANCED (default) | 0 / 50 | 37.6 | 1121 |
+| WI-FI | 0 / 20 | 61.2 | 412 |
+| BLE | 0 / 80 | 11.5 | 1729 |
+| SLICED 4 s Wi-Fi / 2 s BLE | 1 / - | 51.4 | 738 |
+
+Access points found are unchanged by the band dwell (about 2-3 on 2.4 GHz and 27-30 on 5 GHz). BALANCED
+reports fewer raw Wi-Fi frames than before because the radio now spends half its Wi-Fi time on the quiet
+2.4 GHz band (it used to spend about 31 %); BLE is unaffected. Running both radios at the old 50 % split
+cost Wi-Fi about half its frames (SLICED, which gives Wi-Fi the radio alone, runs about 85 frames per
+active 5 s).
 
 ### 3c. Charge mode (power state)
 

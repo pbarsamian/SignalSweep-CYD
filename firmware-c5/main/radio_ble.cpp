@@ -27,7 +27,8 @@ static const char* TAG = "ble";
 static volatile bool s_enabled = false;     // scanning wanted (off in charge mode)
 static volatile bool s_synced = false;      // NimBLE host ready
 static uint8_t s_own_addr_type = 0;
-static volatile bool s_focus = false;       // full-duty scan while a BLE target is focused
+static volatile uint8_t s_duty = 50;         // scan window, percent of the 100 ms interval (the scheduler sets it)
+static volatile bool s_paused = false;       // the scheduler has the radio on Wi-Fi right now
 
 // ---- parsed advertisement ----------------------------------------------------------------------
 #define MAX_SVC16 8
@@ -363,17 +364,17 @@ static void on_advert(const struct ble_gap_disc_desc* disc) {
 static int gap_cb(struct ble_gap_event* ev, void*);
 
 static void start_scan(void) {
-    if (!s_synced || !s_enabled) return;
+    if (!s_synced || !s_enabled || s_paused) return;
     struct ble_gap_disc_params dp = {};
     dp.itvl = BLE_GAP_SCAN_ITVL_MS(100);                 // 100 ms interval,
-    dp.window = BLE_GAP_SCAN_WIN_MS(s_focus ? 100 : 50); // 50 ms window leaves the radio time for Wi-Fi; focus listens full-time
+    dp.window = BLE_GAP_SCAN_WIN_MS(s_duty);             // 100 ms interval x duty %: the rest of the time is Wi-Fi's
     dp.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
     dp.limited = 0;
     dp.passive = 1;                                      // PASSIVE: never sends a scan request
     dp.filter_duplicates = 0;                            // keep every advert so RSSI keeps updating
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &dp, gap_cb, nullptr);
     if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "ble_gap_disc failed: %d", rc);
-    else ESP_LOGI(TAG, "passive scan started (100/%d ms)", s_focus ? 100 : 50);
+    else ESP_LOGI(TAG, "passive scan started (100/%d ms)", (int)s_duty);
 }
 
 static int gap_cb(struct ble_gap_event* ev, void*) {
@@ -406,12 +407,22 @@ static void host_task(void*) {
 
 bool radio_ble_enabled(void) { return s_enabled; }
 
-void radio_ble_set_focus(bool on) {
-    if (on == s_focus) return;
-    s_focus = on;
-    if (!s_synced || !s_enabled) return;
+void radio_ble_set_duty(int pct) {
+    if (pct < 10) pct = 10;
+    if (pct > 100) pct = 100;
+    if (pct == s_duty) return;
+    s_duty = (uint8_t)pct;
+    if (!s_synced || !s_enabled || s_paused) return;
     ble_gap_disc_cancel();                               // restart with the new window (still passive)
     start_scan();
+}
+
+void radio_ble_set_paused(bool paused) {
+    if (paused == s_paused) return;
+    s_paused = paused;
+    if (!s_synced || !s_enabled) return;
+    if (paused) ble_gap_disc_cancel();
+    else start_scan();
 }
 
 void radio_ble_set_enabled(bool on) {

@@ -153,7 +153,14 @@
   payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
   Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, vendor names for peers (no OUI db yet).
   Console test keys on the CYD: f focus first detection, F focus strongest AP, r release, k print the focus view.
-- Not built yet: scan scheduler, M4/M6 consent flow.
+- Scan scheduler (issue #3): sched.* on the C5 splits the one radio between Wi-Fi and BLE. CONCURRENT (BLE window 10..90 %) or SLICED
+  (exclusive Wi-Fi / BLE slots); focus mode locks it (Wi-Fi focus = BLE paused, BLE focus = Wi-Fi receive paused). The CYD holds four
+  presets (WI-FI, BALANCED = old behaviour and default, BLE, SLICED) behind the SCAN button on SET > ALERTS, saved in NVS and pushed in
+  SET_CONFIG after every HELLO. Measured numbers are in PROTOCOL.md section 3b-4. Console test keys: 1..4 select a preset (not saved).
+  The C5 now hops one Wi-Fi band for 6 s (bdms), then the other, and reports scan/lock/band in status events. The SCOPE band button
+  has AUTO (default): Wi-Fi-only shows the band, BLE-only shows the BLE list, both-together rotates 2.4/5/BLE every 6 s; the canvas is
+  drawn off-screen (48 KB sprite) so it no longer flashes. Not done: a live frames-per-5 s readout on the CYD.
+- Not built yet: M4/M6 consent flow.
 - Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),
   FOCUS_TARGET, Remote ID.
 

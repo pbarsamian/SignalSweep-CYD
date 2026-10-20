@@ -17,6 +17,9 @@ struct C5Status {
     uint8_t  power = 0;              // ss_power_t: 0 normal, 1 charge (user), 2 charge (forced)
     uint16_t dets = 0;               // detections the C5 currently holds
     uint32_t cut_s = 0;              // seconds until the C5 cuts the CYD's supply (0 = not scheduled)
+    uint8_t  scan = 3;               // what the C5 radio is doing: 1 Wi-Fi only, 2 BLE only, 3 both
+    uint8_t  lock = 0;               // focus lock: 0 none, 1 Wi-Fi, 2 BLE
+    uint8_t  band = 2;               // Wi-Fi band being scanned now: 2 or 5
 };
 
 struct StatusView {

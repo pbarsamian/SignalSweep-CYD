@@ -71,10 +71,14 @@ static void send_resp(uint8_t seq, uint8_t status, const uint8_t* cbor, size_t n
 }
 
 static void send_status_event(void) {
-    uint8_t b[96];
+    uint8_t b[128];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b + 1, sizeof(b) - 1);
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 5);
+    uint8_t st = det_scan_state();
+    ss_cbor_map(&w, 8);
+    ss_cbor_kv_uint(&w, "band", (st & 0x40) ? 5 : 2);        // the Wi-Fi band being scanned right now
+    ss_cbor_kv_uint(&w, "scan", st & 0x0F);                  // what the radio is doing: 1 Wi-Fi, 2 BLE, 3 both
+    ss_cbor_kv_uint(&w, "lock", (st >> 4) & 0x03);                    // focus lock: 0 none, 1 Wi-Fi, 2 BLE
     ss_cbor_kv_uint(&w, "power", power_state());
     ss_cbor_kv_uint(&w, "cut_s", power_cyd_cut_in_s());
     ss_cbor_kv_uint(&w, "batt_mv", mv);
@@ -151,16 +155,28 @@ static void op_set_config(uint8_t seq, const uint8_t* a, size_t n) {
     static const char* K[5] = { "drone", "tracker", "camera", "bodycam", "attack" };
     for (int i = 0; i < 5; i++) { bool b; if (ss_cbor_get_bool(a, n, K[i], &b)) v[i] = b ? 1 : 0; }
     det_set_config(v[0], v[1], v[2], v[3], v[4]);
+    uint32_t u;                                   // scan scheduler (optional keys; see sched.h)
+    int sm = -1, sb = -1, sw = -1, sbl = -1, sbd = -1;
+    if (ss_cbor_get_uint(a, n, "smode", &u)) sm = (int)u;
+    if (ss_cbor_get_uint(a, n, "bpct", &u)) sb = (int)u;
+    if (ss_cbor_get_uint(a, n, "wms", &u)) sw = (int)u;
+    if (ss_cbor_get_uint(a, n, "bms", &u)) sbl = (int)u;
+    if (ss_cbor_get_uint(a, n, "bdms", &u)) sbd = (int)u;
+    if (sm >= 0 || sb >= 0 || sw >= 0 || sbl >= 0 || sbd >= 0) det_set_sched(sm, sb, sw, sbl, sbd);
     send_resp(seq, SS_OK, NULL, 0);
 }
 
 static void op_get_status(uint8_t seq) {
     uint32_t now = now_ms();
     ss_mode_t eff = effective_mode(now);          // may latch the shadow invalid first
-    uint8_t b[96];
+    uint8_t b[128];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 9);
+    uint8_t st = det_scan_state();
+    ss_cbor_map(&w, 12);
+    ss_cbor_kv_uint(&w, "band", (st & 0x40) ? 5 : 2);
+    ss_cbor_kv_uint(&w, "scan", st & 0x0F);
+    ss_cbor_kv_uint(&w, "lock", (st >> 4) & 0x03);
     ss_cbor_kv_uint(&w, "power", power_state());
     ss_cbor_kv_uint(&w, "cut_s", power_cyd_cut_in_s());
     ss_cbor_kv_uint(&w, "mode", eff);
@@ -339,6 +355,12 @@ void dispatch_tick(void) {
     if (power_state() != last_power) {            // tell the CYD at once, not at the next heartbeat
         last_power = power_state();
         if (S.valid) { S.last_evt_ms = now; send_status_event(); }
+    }
+    static uint8_t last_scan = 0xFF;
+    uint8_t scan_now = det_scan_state();
+    if (scan_now != last_scan) {                  // a slice flipped or focus locked: tell the CYD at once
+        last_scan = scan_now;
+        if (S.valid && power_radio_allowed()) { S.last_evt_ms = now; send_status_event(); }
     }
     if (!S.valid) return;
 

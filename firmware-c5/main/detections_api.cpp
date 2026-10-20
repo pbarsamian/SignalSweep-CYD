@@ -7,6 +7,7 @@
 #include <strings.h>
 #include "signatures.h"
 #include "focus.h"
+#include "sched.h"
 #include "ss_protocol.h"
 #include <stdio.h>
 
@@ -46,14 +47,21 @@ void det_api_start(bool radio_on) {
     registry_init();
     radio_wifi_start(radio_on);     // brings up NVS, the event loop and the Wi-Fi driver first
     radio_ble_start(radio_on);
+    sched_start();
 }
 
 void det_focus_stop(const char* why) {
     if (!focus_active()) return;
     focus_stop(why);
     radio_wifi_set_data_filter(false);
-    radio_ble_set_focus(false);
+    sched_lock(SCHED_LOCK_NONE);
 }
+
+void det_set_sched(int mode, int ble_pct, int wifi_ms, int ble_ms, int band_ms) {
+    sched_set(mode, ble_pct, wifi_ms, ble_ms);
+    if (band_ms >= 0) radio_wifi_set_band_dwell(band_ms);
+}
+uint8_t det_scan_state(void) { return (uint8_t)(sched_run_mask() | (sched_lock_state() << 4) | (radio_wifi_band() == 5 ? 0x40 : 0)); }
 
 void det_radio_enable(bool on) {
     if (!on) det_focus_stop("radio off");
@@ -146,7 +154,7 @@ int det_focus_request(const uint8_t* a, size_t n, ss_cbor_w_t* w) {
     det_focus_stop("retarget");
     focus_start(mac, wifi, (uint8_t)ch);
     if (wifi) radio_wifi_set_data_filter(true);
-    else radio_ble_set_focus(true);
+    sched_lock(wifi ? SCHED_LOCK_WIFI : SCHED_LOCK_BLE);   // park the radio on the target's side
     focus_reply(w);
     return SS_OK;
 }
@@ -412,7 +420,7 @@ void det_tick(void) {
     if (now - last_prune >= 1000) { last_prune = now; registry_prune(); }
     // Stats line: every 5 s while scanning, every 60 s in charge mode (fewer wake-ups)
     uint32_t log_every = radio_wifi_enabled() ? 5000 : 60000;
-    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); radio_ble_log_stats(); }
+    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); radio_ble_log_stats(); sched_log(); }
 }
 
 }  // extern "C"

@@ -14,8 +14,15 @@ struct UiSettings {
     bool    speaker = true;
     bool    led = true;
     uint8_t brightness = 200;                                // backlight PWM 25..255
+    uint8_t sched = 1;                                       // scan balance preset (SCHED_PRESETS index)
 };
 extern UiSettings g_ui_set;
+
+// How the C5 splits its one radio between Wi-Fi and BLE (see firmware-c5/main/sched.h). The C5 takes the raw
+// numbers in SET_CONFIG {smode, bpct, wms, bms}; the names live here.
+struct SchedPreset { const char* name; uint8_t mode; uint8_t bpct; uint16_t wms, bms, bdms; };
+extern const SchedPreset SCHED_PRESETS[];
+extern const int SCHED_N;
 
 struct UiCallbacks {
     void (*enter_charge)();          // user pressed CHARGE MODE

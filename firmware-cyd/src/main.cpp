@@ -105,14 +105,20 @@ static void send_set_power(bool charge) {
 }
 
 static void send_set_config() {
-    uint8_t buf[64];
+    uint8_t buf[128];
     ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
-    ss_cbor_map(&w, 5);
+    ss_cbor_map(&w, 10);
     ss_cbor_kv_bool(&w, "drone", g_ui_set.detect[0]);
     ss_cbor_kv_bool(&w, "tracker", g_ui_set.detect[1]);
     ss_cbor_kv_bool(&w, "camera", g_ui_set.detect[2]);
     ss_cbor_kv_bool(&w, "bodycam", g_ui_set.detect[3]);
     ss_cbor_kv_bool(&w, "attack", g_ui_set.detect[4]);
+    const SchedPreset& sp = SCHED_PRESETS[g_ui_set.sched < SCHED_N ? g_ui_set.sched : 1];
+    ss_cbor_kv_uint(&w, "smode", sp.mode);                 // how the C5 splits its radio between Wi-Fi and BLE
+    ss_cbor_kv_uint(&w, "bpct", sp.bpct);
+    ss_cbor_kv_uint(&w, "wms", sp.wms);
+    ss_cbor_kv_uint(&w, "bms", sp.bms);
+    ss_cbor_kv_uint(&w, "bdms", sp.bdms);                    // time on each Wi-Fi band before switching (the scope follows it)
     g_link.send_req(SS_OP_SET_CONFIG, nullptr, buf, w.len);
 }
 
@@ -331,6 +337,9 @@ static void handle_status_resp(const uint8_t* cb, size_t n) {
     c5.power = ss_cbor_get_uint(cb, n, "power", &u) ? (uint8_t)u : 0;
     c5.dets = ss_cbor_get_uint(cb, n, "dets", &u) ? (uint16_t)u : 0;
     c5.cut_s = ss_cbor_get_uint(cb, n, "cut_s", &u) ? u : 0;
+    c5.scan = ss_cbor_get_uint(cb, n, "scan", &u) ? (uint8_t)u : 3;
+    c5.lock = ss_cbor_get_uint(cb, n, "lock", &u) ? (uint8_t)u : 0;
+    c5.band = ss_cbor_get_uint(cb, n, "band", &u) ? (uint8_t)u : 2;
     s_cut_deadline = c5.cut_s ? millis() + c5.cut_s * 1000UL : 0;
     apply_power_ui();
     g_hb_misses = 0;
@@ -436,6 +445,12 @@ static void on_event(uint8_t kind, const uint8_t* cb, size_t n) {
         if (ss_cbor_get_bool(cb, n, "batt_low", &b)) c5.batt_low = b;
         if (ss_cbor_get_uint(cb, n, "cut_s", &u)) { c5.cut_s = u; s_cut_deadline = u ? millis() + u * 1000UL : 0; }
         if (ss_cbor_get_uint(cb, n, "power", &u)) { c5.power = (uint8_t)u; apply_power_ui(); }
+        uint8_t old_scan = c5.scan, old_lock = c5.lock, old_band = c5.band;
+        if (ss_cbor_get_uint(cb, n, "band", &u)) c5.band = (uint8_t)u;
+        if (ss_cbor_get_uint(cb, n, "scan", &u)) c5.scan = (uint8_t)u;
+        if (ss_cbor_get_uint(cb, n, "lock", &u)) c5.lock = (uint8_t)u;
+        if (c5.scan != old_scan || c5.lock != old_lock || c5.band != old_band)
+            Serial.printf("[scan] radio=%u lock=%u band=%u\n", c5.scan, c5.lock, c5.band);   // radio: 1 Wi-Fi, 2 BLE, 3 both
         return;
     }
     if (kind == SS_EVT_RSSI_TICK) { model_ingest_tick(cb, n); return; }
@@ -516,6 +531,11 @@ static void console() {
             break;
         }
         case 'k': s_print_fv = true; send_focus_view(); break;     // print the focus view
+        case '1': case '2': case '3': case '4': {                  // scan balance preset (test hook; not saved)
+            int p = ch - '1';
+            if (p < SCHED_N) { g_ui_set.sched = (uint8_t)p; Serial.printf("[sched] preset %d %s\n", p + 1, SCHED_PRESETS[p].name); send_set_config(); }
+            break;
+        }
         case 'u': send_simple(0x7E); break;                        // unknown: expect ERR_OPCODE
         case 'x': {                                                // corrupt CRC: expect NACK ERR_CRC
             size_t n = g_link.build_req_frame(frame, sizeof(frame), SS_OP_GET_STATUS, nullptr, 0);

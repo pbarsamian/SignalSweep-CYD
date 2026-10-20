@@ -27,6 +27,9 @@ int      det_focus_request(const uint8_t* args, size_t n, ss_cbor_w_t* w);
 void     det_focus_stop(const char* why);            // end any focus and restore the sweep
 bool     det_encode_focus(ss_cbor_w_t* w);           // GET_DEVICE_PROFILE view "focus"; false if not focused
 bool     det_pop_focus_event(ss_cbor_w_t* w);        // next RSSI_TICK body (rate-limited), if focused
+// Scan scheduler (SET_CONFIG keys smode, bpct, wms, bms): -1 leaves a value unchanged.
+void     det_set_sched(int mode, int ble_pct, int wifi_ms, int ble_ms, int band_ms);
+uint8_t  det_scan_state(void);                      // what is being scanned now: bits 0-1 run mask (1 Wi-Fi, 2 BLE), bits 4-5 lock, bit 6 = on 5 GHz
 uint32_t det_count(void);
 void     det_tick(void);                             // housekeeping: prune stale, log stats
 
