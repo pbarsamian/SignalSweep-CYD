@@ -22,6 +22,16 @@
                                         //     mode shadow is stale => ACTIVE ops refused
 #define SS_REQ_TIMEOUT_MS     600u      // CYD: give up on an unanswered REQ
 
+// ---- charge-mode power savings (see PROTOCOL.md 3c) ------------------------------
+// In charge mode the radio is off, so the link only needs to prove liveness slowly.
+#define SS_CHARGE_HEARTBEAT_MS     15000u  // CYD GET_STATUS period (3 misses = link down after 45 s)
+#define SS_CHARGE_SHADOW_STALE_MS  45000u  // C5 stale window while charging (> 3 heartbeats)
+#define SS_CHARGE_STATUS_EVT_MS    30000u  // C5 STATUS event period while charging (10 s normally)
+#define SS_CHARGE_WAKE_MS           8000u  // CYD screen stays on this long after a touch
+// Optional hardware: the C5 can cut the CYD's supply through the boost converter's EN pin
+// after this long in charge mode (needs a wire + pull-up, see BUILD_MANIFEST.md).
+#define SS_CYD_CUT_DELAY_MS        30000u
+
 // ---- frame TYPE -------------------------------------------------------------
 typedef enum {
     SS_T_REQ   = 1,   // CYD -> C5 : invoke an opcode
@@ -45,6 +55,7 @@ typedef enum {
     SS_OP_SET_MODE          = 0x02, // CYD pushes authoritative mode to C5 shadow
     SS_OP_GET_STATUS        = 0x03,
     SS_OP_SET_POWER         = 0x04, // charge mode on/off (refused while forced: SS_ERR_LOCKED)
+    SS_OP_SET_CONFIG        = 0x05, // detection-type toggles {drone,tracker,camera,bodycam,attack: bool}
 
     // PASSIVE — receive-only
     SS_OP_SCAN_WIFI         = 0x10, // listen-only; NO probe requests

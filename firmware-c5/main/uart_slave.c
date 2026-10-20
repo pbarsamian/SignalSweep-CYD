@@ -13,6 +13,7 @@
 static const char* TAG = "link";
 
 static ss_parser_t s_parser;
+static volatile uint32_t s_idle_ms = 20;
 static uint8_t s_rx_payload[SS_MAX_PAYLOAD];
 static uint8_t s_tx_frame[SS_MAX_PAYLOAD + SS_FRAME_OVERHEAD];
 
@@ -44,7 +45,7 @@ static void link_task(void* arg) {
     uint8_t chunk[128];
     ss_frame_t f;
     for (;;) {
-        int n = uart_read_bytes(LINK_UART, chunk, sizeof(chunk), pdMS_TO_TICKS(20));
+        int n = uart_read_bytes(LINK_UART, chunk, sizeof(chunk), pdMS_TO_TICKS(s_idle_ms));
         for (int i = 0; i < n; i++) {
             ss_parse_result_t r = ss_parser_feed(&s_parser, chunk[i], &f);
             if (r == SS_PARSE_FRAME) {
@@ -59,6 +60,8 @@ static void link_task(void* arg) {
         dispatch_tick();
     }
 }
+
+void uart_slave_set_idle_ms(uint32_t ms) { s_idle_ms = ms; }
 
 void uart_slave_start(void) {
     xTaskCreate(link_task, "link", 6144, NULL, 5, NULL);

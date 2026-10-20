@@ -189,6 +189,26 @@ Charging: plug USB-C into the C5 (switch ON). That is the only USB use.
 - **Bulk capacitor:** about 470 µF near the C5's supply pins is a reasonable
   precaution for radio bursts (not verified as required).
 
+### Optional: let the C5 cut the CYD's supply during charge mode
+
+Charge mode already turns the CYD's display fully off. To remove the rest of the CYD's draw (and
+the boost converter's idle current), the C5 can switch the CYD's power off after 30 s in a
+charge state. This needs hardware that is **not built yet**; with `SS_BOOST_EN_GPIO = -1` (the
+default) the feature is compiled out and nothing changes.
+
+- Wire a spare C5 GPIO (pad D8 / GPIO8 is unused) to the **EN pin of the boost converter**, if
+  your module has one, or to a small switch (for example a logic-level P-channel MOSFET) in the
+  CYD's 5 V feed. Active-high enable is assumed.
+- **EN must have a pull-up** (to the battery or boost input). The C5 drives the pin open-drain
+  and only ever pulls it LOW to cut; releasing it lets the pull-up power the CYD. Without the
+  pull-up the CYD would stay off whenever the C5 is in reset.
+- Enable it by defining `SS_BOOST_EN_GPIO=8` for `firmware-c5` (see the commented line in
+  `firmware-c5/main/CMakeLists.txt`).
+- Waking: a forced exit (battery above 4.0 V) restores power automatically. A user-selected
+  charge mode has no touchscreen to leave it with, so press the C5's BOOT button.
+- Trade-off: while cut, the unit shows nothing. The battery voltage is only visible during the
+  30 s grace period or after waking.
+
 ### Battery telemetry (C5 → CYD)
 
 - **Voltage:** the board divides VBAT with two 100K resistors (schematic: "Battery

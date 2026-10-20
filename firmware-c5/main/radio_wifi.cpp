@@ -354,7 +354,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
 static void hop_task(void*) {
     size_t i = 0;
     for (;;) {
-        if (!s_enabled) { vTaskDelay(pdMS_TO_TICKS(250)); continue; }   // charge mode: idle
+        if (!s_enabled) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }  // charge mode: idle
         uint8_t ch = PLAN[i];
         xSemaphoreTake(s_radio_mux, portMAX_DELAY);
         esp_err_t e = s_enabled ? esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) : ESP_ERR_INVALID_STATE;
@@ -415,6 +415,7 @@ static void radio_apply(bool on) {
 }
 
 void radio_wifi_set_enabled(bool on) { radio_apply(on); }
+bool radio_wifi_enabled(void) { return s_enabled; }
 
 void radio_wifi_start(bool enabled) {
     s_radio_mux = xSemaphoreCreateMutex();

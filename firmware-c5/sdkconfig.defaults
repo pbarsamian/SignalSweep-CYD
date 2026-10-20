@@ -7,3 +7,6 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 # Larger single factory app (no OTA) so BLE + Remote ID fit.
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Power management: lets charge mode drop the CPU clock to 80 MHz.
+CONFIG_PM_ENABLE=y

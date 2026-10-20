@@ -11,5 +11,6 @@
 
 void uart_slave_init(void);
 void uart_slave_start(void);                  // spawns the rx/dispatch task
+void uart_slave_set_idle_ms(uint32_t ms);     // idle poll period (arriving bytes still wake the task at once)
 // Frame and transmit. Safe to call from the link task only (single writer).
 void uart_slave_send(uint8_t type, uint8_t seq, uint8_t flags, const uint8_t* payload, uint16_t len);

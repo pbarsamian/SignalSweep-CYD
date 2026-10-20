@@ -16,6 +16,7 @@ struct C5Status {
     bool     batt_low = false;
     uint8_t  power = 0;              // ss_power_t: 0 normal, 1 charge (user), 2 charge (forced)
     uint16_t dets = 0;               // detections the C5 currently holds
+    uint32_t cut_s = 0;              // seconds until the C5 cuts the CYD's supply (0 = not scheduled)
 };
 
 struct StatusView {
@@ -29,4 +30,5 @@ void status_ui_init();                         // display + backlight, boot spla
 void status_ui_draw(const StatusView& v, ss_mode_t mode);   // cheap: redraws changed lines only
 bool status_ui_charge_button_hit(int x, int y);             // CHARGE button on the normal screen
 void status_ui_set_charge(bool on);                         // enter/leave the charge screen (dim, 80 MHz)
-void status_ui_draw_charge(const C5Status& c);              // battery voltage only
+void status_ui_draw_charge(const C5Status& c, uint32_t cut_left_s);   // battery voltage only
+void status_ui_screen_power(bool on);                       // charge mode: panel + backlight fully off / back on

@@ -111,6 +111,13 @@ until the battery is above 4.0 V (taps and `e` are refused; the 4.0 V hold appli
 forced state). A pack already low at boot starts in forced charge mode with the radio never
 switched on. On battery alone a forced session stays until the unit is plugged in.
 
+**Charge-mode power savings** (all four are in the firmware; see PROTOCOL.md 3c): display fully
+off after 8 s with tap-to-wake, optional CYD supply cut through the boost converter's EN pin
+(compiled out until wired), C5 at 80 MHz with slower polling, and a 15 s heartbeat. Console key
+`t` on the CYD simulates a tap. How much current this actually saves has to be measured: put
+a USB power meter on the C5 and a multimeter in series with the battery, or watch the charge
+screen's voltage rise over an hour.
+
 Verified on hardware: the 17-case on-device self-test of the decision logic; a simulated
 3300 mV -> 4100 mV battery sweep (forced at boot, radio off, exit and re-enter both answered
 `charge locked`, scan `ERR_BUSY`, released at 4028 mV, capture resumed); the user path.

@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "registry.h"
 #include "radio_wifi.h"
+#include "signatures.h"
 
 #define LIST_PAGE 10                 // entries per LIST_DETECTIONS reply (keeps it well under one frame)
 
@@ -42,6 +43,24 @@ void det_api_start(bool radio_on) {
 }
 
 void det_radio_enable(bool on) { radio_wifi_set_enabled(on); }
+
+void det_set_config(int drone, int tracker, int camera, int bodycam, int attack) {
+    if (drone   >= 0) g_cfg.detect_drone   = drone;
+    if (tracker >= 0) g_cfg.detect_tracker = tracker;
+    if (camera  >= 0) g_cfg.detect_camera  = camera;
+    if (bodycam >= 0) g_cfg.detect_bodycam = bodycam;
+    if (attack  >= 0) g_cfg.detect_attack  = attack;
+    if (xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(50)) != pdTRUE) return;
+    for (int i = 0; i < g_reg.count; ) {                       // purge any type that is now off
+        if (!type_enabled(g_reg.items[i].type, g_cfg)) {
+            for (int j = i; j < g_reg.count - 1; j++) g_reg.items[j] = g_reg.items[j + 1];
+            g_reg.count--;
+        } else i++;
+    }
+    xSemaphoreGive(g_reg_mutex);
+    ESP_LOGI("cfg", "detect drone=%d tracker=%d camera=%d bodycam=%d attack=%d", g_cfg.detect_drone,
+             g_cfg.detect_tracker, g_cfg.detect_camera, g_cfg.detect_bodycam, g_cfg.detect_attack);
+}
 
 uint32_t det_count(void) { return (uint32_t)g_reg.count; }
 
@@ -87,7 +106,9 @@ void det_tick(void) {
     static uint32_t last_prune = 0, last_log = 0;
     uint32_t now = ms_now();
     if (now - last_prune >= 1000) { last_prune = now; registry_prune(); }
-    if (now - last_log >= 5000) { last_log = now; radio_wifi_log_stats(); }
+    // Stats line: every 5 s while scanning, every 60 s in charge mode (fewer wake-ups)
+    uint32_t log_every = radio_wifi_enabled() ? 5000 : 60000;
+    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); }
 }
 
 }  // extern "C"

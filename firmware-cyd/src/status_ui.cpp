@@ -4,7 +4,8 @@
 #include "board_pins.h"
 #include "mode.h"
 
-static TFT_eSPI tft;
+TFT_eSPI tft;                       // shared with ui.cpp
+uint8_t   g_backlight = 200;         // normal backlight PWM (settings page changes it)
 
 #define C_BG     TFT_BLACK
 #define C_FG     TFT_WHITE
@@ -17,7 +18,7 @@ static TFT_eSPI tft;
 void status_ui_init() {
     ledcSetup(0, 5000, 8);
     ledcAttachPin(PIN_TFT_BL, 0);
-    ledcWrite(0, 200);
+    ledcWrite(0, g_backlight);
 
     tft.init();
     tft.setRotation(3);
@@ -114,6 +115,13 @@ void status_ui_draw(const StatusView& v, ss_mode_t mode) {
     line(7, 208, v.last[0] ? v.last : "last: -", C_ACCENT, 2);
 }
 
+// Repaint the diagnostics page from scratch (it is an overlay now)
+void status_ui_reset() {
+    s_first = true;
+    s_pill_shown = (ss_mode_t)99;
+    memset(L, 0, sizeof(L));
+}
+
 bool status_ui_charge_button_hit(int x, int y) {
     return x >= CHG_BTN_X && x < CHG_BTN_X + CHG_BTN_W && y >= CHG_BTN_Y && y < CHG_BTN_Y + CHG_BTN_H;
 }
@@ -122,8 +130,8 @@ bool status_ui_charge_button_hit(int x, int y) {
 // Everything except the battery voltage is switched off: backlight dimmed, CPU slowed to
 // 80 MHz (the lowest speed that keeps the APB clock, and so the UART baud rate, intact),
 // and the screen redraws only when a value changes.
-static char s_chg_last[3][40];
-static uint16_t s_chg_col[3];
+static char s_chg_last[4][44];
+static uint16_t s_chg_col[4];
 
 static void chg_text(int idx, int y, const char* text, uint16_t col, int font) {
     if (strncmp(s_chg_last[idx], text, sizeof(s_chg_last[idx])) == 0 && s_chg_col[idx] == col) return;
@@ -137,6 +145,7 @@ static void chg_text(int idx, int y, const char* text, uint16_t col, int font) {
 }
 
 void status_ui_set_charge(bool on) {
+    status_ui_screen_power(true);               // always start (and leave) with the panel awake
     memset(s_chg_last, 0, sizeof(s_chg_last));
     memset(s_chg_col, 0, sizeof(s_chg_col));
     tft.fillScreen(C_BG);
@@ -144,7 +153,7 @@ void status_ui_set_charge(bool on) {
         ledcWrite(0, 25);                 // backlight to about 10%
         setCpuFrequencyMhz(80);
     } else {
-        ledcWrite(0, 200);
+        ledcWrite(0, g_backlight);
         setCpuFrequencyMhz(240);
         s_first = true;                   // normal screen repaints from scratch
         s_pill_shown = (ss_mode_t)99;
@@ -152,7 +161,7 @@ void status_ui_set_charge(bool on) {
     }
 }
 
-void status_ui_draw_charge(const C5Status& c) {
+void status_ui_draw_charge(const C5Status& c, uint32_t cut_left_s) {
     bool forced = (c.power == SS_POWER_CHARGE_FORCED);
     chg_text(0, 20, forced ? "LOW BATTERY - CHARGE REQUIRED" : "CHARGE MODE", forced ? C_BAD : C_ACCENT, 2);
     char b[16];
@@ -162,5 +171,33 @@ void status_ui_draw_charge(const C5Status& c) {
     } else {
         chg_text(1, 70, c.link_up ? "n/a" : "no link", C_DIM, 4);
     }
-    chg_text(2, 190, forced ? "locked until over 4.00 V" : "tap anywhere to exit", C_DIM, 2);
+    chg_text(2, 170, forced ? "locked until over 4.00 V" : "tap anywhere to exit", C_DIM, 2);
+    if (cut_left_s) {
+        char t[44];
+        snprintf(t, sizeof(t), "CYD power off in %us%s", (unsigned)cut_left_s, forced ? "" : "  (BOOT on C5 wakes)");
+        chg_text(3, 200, t, C_WARN, 2);
+    } else {
+        chg_text(3, 200, "", C_DIM, 2);
+    }
+}
+
+// Panel + backlight fully off (the biggest CYD load) and back on. The ILI9341 is put into
+// sleep (SLPIN) as well; its registers and frame memory survive, so a wake just repaints.
+static bool s_panel_on = true;
+void status_ui_screen_power(bool on) {
+    if (on == s_panel_on) return;
+    s_panel_on = on;
+    if (on) {
+        tft.writecommand(0x11);                  // SLPOUT
+        delay(120);                              // the datasheet's settling time after SLPOUT
+        tft.writecommand(0x29);                  // DISPON
+        memset(s_chg_last, 0, sizeof(s_chg_last));   // force a repaint of every line
+        memset(s_chg_col, 0, sizeof(s_chg_col));
+        tft.fillScreen(C_BG);
+        ledcWrite(0, 25);
+    } else {
+        ledcWrite(0, 0);
+        tft.writecommand(0x28);                  // DISPOFF
+        tft.writecommand(0x10);                  // SLPIN
+    }
 }

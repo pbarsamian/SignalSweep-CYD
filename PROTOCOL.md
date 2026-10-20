@@ -101,6 +101,7 @@ A RESP payload is `[STATUS u8][ CBOR map of result ]`.
 |--------|------|-------|-------|
 | 0x01 | `HELLO` | — | handshake, exchanges session secret + versions |
 | 0x02 | `SET_MODE` | — | CYD pushes authoritative mode to C5 shadow |
+| 0x05 | `SET_CONFIG` | — | detection-type toggles `{drone,tracker,camera,bodycam,attack: bool}`; the CYD pushes its saved settings after every HELLO; a type switched off is dropped from the C5 registry |
 | 0x04 | `SET_POWER` | — | user-selected charge mode on/off; refused while forced — see §3c |
 | 0x03 | `GET_STATUS` | — | radio state, mode shadow, queue depth, battery (`batt_mv`, `batt_low`) — see §3a |
 | 0x10 | `SCAN_WIFI` | PASSIVE | listen-only; no probe requests |
@@ -200,6 +201,27 @@ States (`ss_power_t`): `0 NORMAL`, `1 CHARGE_USER`, `2 CHARGE_FORCED`.
   sense line floats near 2.3 V, which the firmware reports as 0.
 - **No USB means no exit:** a forced charge session on battery alone cannot reach 4.0 V, so the
   unit stays in charge mode until it is plugged in. That is the intended behaviour.
+
+**Power savings while charging.** Goal: keep the total draw below the C5 charger's fixed
+200 mA so the battery gains charge.
+1. **Display fully off.** The CYD switches the panel off (ILI9341 `SLPIN` + `DISPOFF`) and the
+   backlight to 0 after `SS_CHARGE_WAKE_MS` (8 s) in charge mode. The touch controller stays on:
+   the first tap only wakes the screen for 8 s (and refreshes the voltage); a second tap on the lit
+   screen leaves a *user* charge mode, and is ignored in a forced one.
+2. **CYD supply cut (optional hardware).** If `SS_BOOST_EN_GPIO` is set and wired, the C5 drives
+   the boost converter's EN pin low (open-drain) `SS_CYD_CUT_DELAY_MS` (30 s) after entering a
+   charge state, cutting the CYD's power entirely. Status replies and events carry `cut_s`
+   (seconds until the cut; 0 = not scheduled) and the charge screen shows the countdown. EN is
+   released the moment charge mode ends, so a forced exit (battery above 4.0 V) powers the CYD
+   back up and it re-handshakes. With the CYD dark there is no touchscreen, so a *user* charge
+   mode is left by pressing the **BOOT button on the C5** (GPIO28); it is ignored while forced.
+3. **C5 clock and wake-ups.** CPU at 80 MHz in any charge state (240 MHz otherwise); the link task
+   polls every 500 ms instead of 20 ms (arriving bytes still wake it at once); the idle hop task
+   sleeps 1 s; the stats log line drops from every 5 s to every 60 s.
+4. **Slower link.** CYD heartbeat `SS_CHARGE_HEARTBEAT_MS` (15 s, was 2 s), C5 status event 30 s
+   (was 10 s), and the C5's stale window `SS_CHARGE_SHADOW_STALE_MS` (45 s, three heartbeats).
+   Every opcode that needs the radio (scans and all ACTIVE ops) is refused with `SS_ERR_BUSY`
+   while charging.
 
 **Retry/timeouts.** A REQ unanswered after `SS_REQ_TIMEOUT_MS` (600 ms) is dropped
 by the CYD; there is no automatic resend.

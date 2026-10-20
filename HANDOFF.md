@@ -109,6 +109,17 @@
   applies ONLY to the forced state. Radio fully off in either charge state; CYD dims, drops to
   80 MHz and shows only the battery voltage; new opcode SET_POWER (0x04), error SS_ERR_LOCKED.
   Test hook: SS_BATT_TEST_SWEEP=1 in battery.h simulates a 3.3 -> 4.1 V sweep (keep it 0).
+- **UI shell (CYD):** ported from the standalone look: header (link dot, battery, RF-mode pill, alert
+  badge), tabs SCOPE / LIST / INFO / SET. SCOPE draws the AP table (2.4 GHz humps or 5 GHz bars);
+  LIST and INFO (detail) draw the C5's detections; SET has ALERTS (detection toggles, speaker, LED)
+  and DEVICE (RF mode, CHARGE MODE, brightness, DIAGNOSTICS = the old bring-up screen). INFO's
+  LINKS/TRAFF/RAW/HUNT/CAP sub-tabs say what C5 feature they wait on. Files: ui.cpp, model.cpp,
+  theme.h. Settings persist in NVS. NOT yet checked by eye on the real screen.
+- **Charge-mode savings (all four in):** panel+backlight fully off after 8 s (tap wakes; first tap only
+  wakes), optional CYD supply cut via boost EN (SS_BOOST_EN_GPIO, off until wired; C5 BOOT button
+  wakes a user charge mode), C5 CPU 80 MHz + slower polling, 15 s heartbeat (C5 stale window 45 s).
+  Verified in logs: 80 <-> 240 MHz switching, radio off, zero link timeouts. Current saving not measured.
+- BLE is NOT scanning on the C5 yet (SCAN_BLE is canned): 2.4 GHz and 5 GHz are confirmed live.
 - Not ported yet: BLE (scan + tracker logic), Remote ID decode (beacon IE is flagged but not
   decoded, NAN skipped), scan scheduler + FOCUS_TARGET, GET_DEVICE_PROFILE, the CYD detection UI.
 - Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),

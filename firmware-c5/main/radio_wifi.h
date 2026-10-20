@@ -10,6 +10,7 @@
 
 void     radio_wifi_start(bool enabled);         // init + hop task; radio on only if `enabled`
 void     radio_wifi_set_enabled(bool on);        // charge mode switches the radio fully off/on
+bool     radio_wifi_enabled(void);
 // Seen access points (beacons / probe responses), freshest first.
 bool     radio_wifi_encode_aps(ss_cbor_w_t* w);
 void     radio_wifi_log_stats(void);             // one summary line on the console

@@ -19,6 +19,7 @@ ss_power_t power_state(void);
 bool       power_radio_allowed(void);          // true only in SS_POWER_NORMAL
 void       power_tick(uint16_t mv);            // ~1 Hz: forced entry/exit, applies radio on/off
 ss_err_t   power_request(bool charge);         // user request; SS_ERR_LOCKED while forced
+uint32_t   power_cyd_cut_in_s(void);           // seconds until the CYD supply is cut (0 = not scheduled / not wired)
 
 // The decision logic as pure functions, so power_selftest() can check it with no battery:
 ss_power_t power_boot_state(uint16_t mv);

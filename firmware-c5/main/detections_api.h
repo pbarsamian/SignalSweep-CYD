@@ -12,6 +12,9 @@ extern "C" {
 
 void     det_api_start(bool radio_on);               // registry + passive Wi-Fi capture (radio only if allowed)
 void     det_radio_enable(bool on);                  // charge mode: radio fully off / back on
+// Detection-type toggles from the CYD's settings (-1 leaves a type unchanged). A type that is
+// switched off is also dropped from the registry at once.
+void     det_set_config(int drone, int tracker, int camera, int bodycam, int attack);
 bool     det_encode_list(ss_cbor_w_t* w, uint32_t offset);   // LIST_DETECTIONS result (one page)
 bool     det_encode_aps(ss_cbor_w_t* w);             // SCAN_WIFI result (seen APs)
 bool     det_pop_event(ss_cbor_w_t* w);              // next pending detection event, if any

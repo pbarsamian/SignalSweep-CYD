@@ -44,7 +44,8 @@ static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 // Mode the gate must use right now. Latches to silent when the shadow goes stale.
 static ss_mode_t effective_mode(uint32_t now) {
-    if (S.valid && (now - S.last_rx_ms) > SS_SHADOW_STALE_MS) {
+    uint32_t window = power_radio_allowed() ? SS_SHADOW_STALE_MS : SS_CHARGE_SHADOW_STALE_MS;
+    if (S.valid && (now - S.last_rx_ms) > window) {
         S.valid = false;
         S.mode = SS_MODE_SILENT_RX;
         S.have_secret = false;
@@ -72,8 +73,9 @@ static void send_status_event(void) {
     uint8_t b[96];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b + 1, sizeof(b) - 1);
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 4);
+    ss_cbor_map(&w, 5);
     ss_cbor_kv_uint(&w, "power", power_state());
+    ss_cbor_kv_uint(&w, "cut_s", power_cyd_cut_in_s());
     ss_cbor_kv_uint(&w, "batt_mv", mv);
     ss_cbor_kv_bool(&w, "batt_low", mv && mv <= SS_BATT_LOW_MV);
     ss_cbor_kv_uint(&w, "mode_shadow", S.valid ? S.mode : SS_MODE_SILENT_RX);
@@ -140,14 +142,25 @@ static void op_set_power(uint8_t seq, const uint8_t* a, size_t n) {
     send_resp(seq, w.err ? SS_ERR_BUSY : (uint8_t)e, b, w.len);
 }
 
+// SET_CONFIG {drone,tracker,camera,bodycam,attack: bool}: which detection types are on. Missing
+// keys leave a type as it was. The CYD pushes its saved settings after every HELLO.
+static void op_set_config(uint8_t seq, const uint8_t* a, size_t n) {
+    int v[5] = { -1, -1, -1, -1, -1 };
+    static const char* K[5] = { "drone", "tracker", "camera", "bodycam", "attack" };
+    for (int i = 0; i < 5; i++) { bool b; if (ss_cbor_get_bool(a, n, K[i], &b)) v[i] = b ? 1 : 0; }
+    det_set_config(v[0], v[1], v[2], v[3], v[4]);
+    send_resp(seq, SS_OK, NULL, 0);
+}
+
 static void op_get_status(uint8_t seq) {
     uint32_t now = now_ms();
     ss_mode_t eff = effective_mode(now);          // may latch the shadow invalid first
     uint8_t b[96];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 8);
+    ss_cbor_map(&w, 9);
     ss_cbor_kv_uint(&w, "power", power_state());
+    ss_cbor_kv_uint(&w, "cut_s", power_cyd_cut_in_s());
     ss_cbor_kv_uint(&w, "mode", eff);
     ss_cbor_kv_bool(&w, "valid", S.valid);
     ss_cbor_kv_uint(&w, "up_ms", now);
@@ -225,6 +238,7 @@ void dispatch_handle(const ss_frame_t* f) {
     if (op == SS_OP_HELLO)      { op_hello(f->seq, p, n); return; }
     if (op == SS_OP_SET_MODE)   { op_set_mode(f->seq, p, n); return; }
     if (op == SS_OP_SET_POWER)  { op_set_power(f->seq, p, n); return; }
+    if (op == SS_OP_SET_CONFIG) { op_set_config(f->seq, p, n); return; }
     if (op == SS_OP_GET_STATUS) { op_get_status(f->seq); return; }
 
     // Everything else is a registry capability and goes through the gate
@@ -243,7 +257,8 @@ void dispatch_handle(const ss_frame_t* f) {
         return;
     }
 
-    if (!power_radio_allowed() && (op == SS_OP_SCAN_WIFI || op == SS_OP_SCAN_BLE)) {
+    if (!power_radio_allowed() &&
+        (op == SS_OP_SCAN_WIFI || op == SS_OP_SCAN_BLE || c->cls != SS_CLS_PASSIVE)) {
         send_resp(f->seq, SS_ERR_BUSY, NULL, 0);   // charge mode: radio is off
         return;
     }
@@ -266,6 +281,12 @@ void dispatch_tick(void) {
     uint32_t now = now_ms();
     (void)effective_mode(now);                    // lets the shadow go stale even with no traffic
     det_tick();                                   // prune stale detections, periodic stats line
+    // Charge mode: nothing to scan, so the link task polls twice a second instead of 50 times
+    static bool idle_slow = false;
+    if (idle_slow == power_radio_allowed()) {
+        idle_slow = !power_radio_allowed();
+        uart_slave_set_idle_ms(idle_slow ? 500 : 20);
+    }
     static bool selftest_done = false;
     if (!selftest_done && now > 4000) { selftest_done = true; power_selftest(); }   // after the USB console is up
     static ss_power_t last_power = SS_POWER_NORMAL;
@@ -296,7 +317,8 @@ void dispatch_tick(void) {
     }
     uint16_t mv = battery_mv();
     bool low = mv && mv <= SS_BATT_LOW_MV;
-    if ((low && !S.low_reported) || (now - S.last_evt_ms) >= 10000) {
+    uint32_t evt_period = power_radio_allowed() ? 10000 : SS_CHARGE_STATUS_EVT_MS;
+    if ((low && !S.low_reported) || (now - S.last_evt_ms) >= evt_period) {
         S.last_evt_ms = now;
         S.low_reported = low;
         send_status_event();
