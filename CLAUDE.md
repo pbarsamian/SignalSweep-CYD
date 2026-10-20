@@ -267,3 +267,17 @@ Build order, each small enough to flash-test before the next:
 - When adding fields, remember the UI copies the whole registry per frame — put
   per-focused-device deep data in the focus profile, not in every Detection.
 - Credit upstream prominently in anything user-facing. Star-the-original first.
+
+---
+
+## Working from the backlog
+
+This applies when work starts from a GitHub issue (for example one labeled `claude`). It overrides the "straight to `main`" workflow above for that work.
+
+1. Read the issue and its **Acceptance criteria**. Those are the definition of done.
+2. Respect **Out of scope**. Do not expand beyond it. The `BUILD_MANIFEST.md` section 0 scope boundary still applies (no ACTIVE_TRANSMIT handlers).
+3. Branch as `claude/<issue-number>-<slug>`. Never commit to `main`.
+4. Open a PR with `Closes #<n>` in the description.
+5. List anything you could not check under a **Not verified** heading in the PR (for example: needs hardware testing on the CYD or C5).
+6. If blocked, comment a specific question on the issue and add the `needs-human` label instead of guessing.
+7. Never add the `claude` label yourself, and never touch secrets.

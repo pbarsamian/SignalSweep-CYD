@@ -1,0 +1,23 @@
+name: Bug
+description: Something is not working
+title: "[Bug] "
+labels: ["type:bug", "status:idea"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: Include logs or serial output.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce / already tried
