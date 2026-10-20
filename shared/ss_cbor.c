@@ -110,7 +110,9 @@ static bool fill_val(const uint8_t** pp, const uint8_t* end, ss_cbor_val_t* v) {
     const uint8_t* p = *pp;
     uint8_t ib = (p < end) ? *p : 0;
     uint8_t major; uint64_t arg; bool indef;
+    const uint8_t* start = p;
     memset(v, 0, sizeof(*v));
+    v->head = start;
     if (!read_head(&p, end, &major, &arg, &indef) || indef) return false;
     switch (major) {
     case 0: v->type = SS_CBOR_UINT; v->u = arg; v->i = arg > INT64_MAX ? INT64_MAX : (int64_t)arg; break;

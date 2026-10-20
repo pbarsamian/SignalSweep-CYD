@@ -1,0 +1,6 @@
+# SignalSweep C5 partition table (8 MB flash, no OTA). 3 MB for the app: BLE + Wi-Fi + the
+# upcoming Remote ID / GATT work outgrew the stock 1.5 MB slot.
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000
+phy_init, data, phy,     0xf000,   0x1000
+factory,  app,  factory, 0x10000,  0x300000

@@ -22,10 +22,11 @@
 #include "battery.h"
 #include "tx_slots.h"
 #include "detections_api.h"
+#include "odid_selftest.h"
 #include "power.h"
 
 static const char* TAG = "dispatch";
-#define FW_NAME "c5-m3b"
+#define FW_NAME "c5-m3c"
 
 static struct {
     bool      valid;                              // a HELLO has established this shadow
@@ -185,6 +186,21 @@ static void op_scan_ble(uint8_t seq) {
     send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
 }
 
+// GET_DEVICE_PROFILE {mac:text}: the deep passive profile of one detection (identity, signal, BLE /
+// Wi-Fi fields, decoded Remote ID). SS_ERR_OPCODE-style "unknown device" is reported as SS_ERR_BUSY.
+static void op_get_profile(uint8_t seq, const uint8_t* a, size_t n) {
+    ss_cbor_val_t m;
+    char mac[24];
+    if (!ss_cbor_map_get(a, n, "mac", &m) || m.type != SS_CBOR_TEXT || m.n == 0 || m.n >= sizeof(mac)) {
+        send_resp(seq, SS_ERR_BADFRAME, NULL, 0);
+        return;
+    }
+    memcpy(mac, m.ptr, m.n); mac[m.n] = 0;
+    ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));
+    bool ok = det_encode_profile(mac, &w);
+    send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
+}
+
 static void op_list_detections(uint8_t seq, const uint8_t* a, size_t n) {
     uint32_t offset = 0;
     if (n) (void)ss_cbor_get_uint(a, n, "offset", &offset);   // optional paging argument
@@ -273,6 +289,7 @@ void dispatch_handle(const ss_frame_t* f) {
     case SS_OP_SCAN_WIFI:        op_scan_wifi(f->seq); return;
     case SS_OP_SCAN_BLE:         op_scan_ble(f->seq); return;
     case SS_OP_LIST_DETECTIONS:  op_list_detections(f->seq, p, n); return;
+    case SS_OP_GET_DEVICE_PROFILE: op_get_profile(f->seq, p, n); return;
     case SS_OP_SUBSCRIBE_EVENTS: S.subscribed = true; send_resp(f->seq, SS_OK, NULL, 0); return;
     case SS_OP_TX_SLOT_A: case SS_OP_TX_SLOT_B: case SS_OP_TX_SLOT_C: case SS_OP_TX_SLOT_D:
         send_resp(f->seq, (uint8_t)tx_slot_run((ss_opcode_t)op, p, n), NULL, 0);
@@ -294,7 +311,7 @@ void dispatch_tick(void) {
         uart_slave_set_idle_ms(idle_slow ? 500 : 20);
     }
     static bool selftest_done = false;
-    if (!selftest_done && now > 4000) { selftest_done = true; power_selftest(); }   // after the USB console is up
+    if (!selftest_done && now > 4000) { selftest_done = true; power_selftest(); odid_selftest(); }   // after the USB console is up
     static ss_power_t last_power = SS_POWER_NORMAL;
     static uint32_t last_pwr_ms = 0;
     if (now - last_pwr_ms >= 1000) {

@@ -4,6 +4,7 @@
 #include "registry.h"
 #include "radio_wifi.h"
 #include "radio_ble.h"
+#include <strings.h>
 #include "signatures.h"
 
 #define LIST_PAGE 10                 // entries per LIST_DETECTIONS reply (keeps it well under one frame)
@@ -102,6 +103,103 @@ bool det_pop_event(ss_cbor_w_t* w) {
     }
     if (!found) return false;                // pruned before we got to it
     encode_det(w, d, ms_now(), &ev);
+    return !w->err;
+}
+
+bool det_encode_profile(const char* mac_text, ss_cbor_w_t* w) {
+    static Detection d;                           // link task only; keep off the stack
+    bool found = false;
+    if (xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return false;
+    for (int i = 0; i < g_reg.count; i++) {
+        char m[20]; g_reg.items[i].mac_str(m);
+        if (strcasecmp(m, mac_text) == 0) { d = g_reg.items[i]; found = true; break; }
+    }
+    xSemaphoreGive(g_reg_mutex);
+    if (!found) return false;
+
+    uint32_t now = ms_now();
+    const RemoteID& r = d.remote_id;
+    bool rid = d.has_remote_id;
+    // Count the keys first (CBOR maps carry their size up front)
+    size_t pairs = 13;                            // always-present identity / timing keys below (mac .. age_ms)
+    if (d.dev_name[0]) pairs++;
+    if (d.company >= 0) pairs++;
+    if (d.tx_power != TXP_NONE) pairs++;
+    if (d.has_appearance) pairs++;
+    if (d.apple_type != 0xFF) pairs += 2;
+    if (d.svc_count) pairs++;
+    if (d.ssid[0]) pairs++;
+    if (d.probe_ssid[0]) pairs++;
+    if (d.proto & PROTO_WIFI) pairs += 4;        // wifi_sec, wifi_std, beacon_int, hidden
+    if (d.country[0]) pairs++;
+    if (rid) pairs++;
+
+    ss_cbor_map(w, pairs);
+    char mac[20]; d.mac_str(mac);
+    ss_cbor_kv_text(w, "mac", mac);
+    ss_cbor_kv_text(w, "name", d.name);
+    ss_cbor_kv_uint(w, "type", (uint32_t)d.type);
+    ss_cbor_kv_uint(w, "conf", d.confidence);
+    ss_cbor_kv_uint(w, "best", d.best_weight);
+    ss_cbor_kv_bool(w, "corr", d.corroborated);
+    ss_cbor_kv_uint(w, "atype", d.addr_type);
+    ss_cbor_kv_text(w, "radio", radio_name(d));
+    ss_cbor_kv_int(w, "rssi", d.rssi);
+    ss_cbor_kv_int(w, "rmin", d.rssi_min);
+    ss_cbor_kv_int(w, "rmax", d.rssi_max);
+    ss_cbor_kv_uint(w, "seen", d.seen_count);
+    ss_cbor_kv_uint(w, "age_ms", now - d.timestamp_ms);
+    if (d.dev_name[0]) ss_cbor_kv_text(w, "dev_name", d.dev_name);
+    if (d.company >= 0) ss_cbor_kv_uint(w, "company", (uint32_t)d.company);
+    if (d.tx_power != TXP_NONE) ss_cbor_kv_int(w, "txp", d.tx_power);
+    if (d.has_appearance) ss_cbor_kv_uint(w, "appear", d.appearance);
+    if (d.apple_type != 0xFF) { ss_cbor_kv_uint(w, "apple", d.apple_type); ss_cbor_kv_uint(w, "apple_i", d.apple_info); }
+    if (d.svc_count) {
+        ss_cbor_text(w, "svc");
+        ss_cbor_array(w, d.svc_count);
+        for (int k = 0; k < d.svc_count; k++) ss_cbor_uint(w, d.svc[k]);
+    }
+    if (d.ssid[0]) ss_cbor_kv_text(w, "ssid", d.ssid);
+    if (d.probe_ssid[0]) ss_cbor_kv_text(w, "probe", d.probe_ssid);
+    if (d.proto & PROTO_WIFI) {
+        ss_cbor_kv_uint(w, "wsec", d.wifi_sec);
+        ss_cbor_kv_uint(w, "wstd", d.wifi_std);
+        ss_cbor_kv_uint(w, "bint", d.beacon_int);
+        ss_cbor_kv_bool(w, "hidden", d.hidden_ssid);
+    }
+    if (d.country[0]) ss_cbor_kv_text(w, "country", d.country);
+    if (rid) {
+        // Remote ID block. CBOR here has no floats, so positions are scaled integers and a key is
+        // simply left out when the drone did not send that field.
+        ss_cbor_text(w, "rid");
+        size_t rp = 1 + (r.uas_id[0] ? 1 : 0) + (r.operator_id[0] ? 1 : 0);
+        if (r.loc_valid) {
+            rp += 2;                                                   // lat, lon
+            if (r.height_agl > -1000) rp++;
+            if (r.alt_geo > -1000) rp++;
+            if (r.speed_ms < 254) rp++;
+            if (r.vspeed_ms < 62) rp++;
+            if (r.heading < 360) rp++;
+        }
+        if (r.op_valid) rp += 2;
+        ss_cbor_map(w, rp);
+        ss_cbor_kv_uint(w, "uat", r.ua_type);
+        if (r.uas_id[0]) ss_cbor_kv_text(w, "uas", r.uas_id);
+        if (r.operator_id[0]) ss_cbor_kv_text(w, "op", r.operator_id);
+        if (r.loc_valid) {
+            ss_cbor_kv_int(w, "lat", (int64_t)(r.lat * 1e6f));          // micro-degrees
+            ss_cbor_kv_int(w, "lon", (int64_t)(r.lon * 1e6f));
+            if (r.height_agl > -1000) ss_cbor_kv_int(w, "h_dm", (int64_t)(r.height_agl * 10.0f));   // decimetres AGL
+            if (r.alt_geo > -1000)    ss_cbor_kv_int(w, "alt_dm", (int64_t)(r.alt_geo * 10.0f));    // decimetres, WGS84
+            if (r.speed_ms < 254)     ss_cbor_kv_int(w, "spd_cms", (int64_t)(r.speed_ms * 100.0f)); // cm/s
+            if (r.vspeed_ms < 62)     ss_cbor_kv_int(w, "vs_cms", (int64_t)(r.vspeed_ms * 100.0f));
+            if (r.heading < 360)      ss_cbor_kv_int(w, "hdg", (int64_t)r.heading);                 // degrees
+        }
+        if (r.op_valid) {
+            ss_cbor_kv_int(w, "olat", (int64_t)(r.op_lat * 1e6f));
+            ss_cbor_kv_int(w, "olon", (int64_t)(r.op_lon * 1e6f));
+        }
+    }
     return !w->err;
 }
 

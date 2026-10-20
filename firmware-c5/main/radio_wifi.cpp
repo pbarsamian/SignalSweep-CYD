@@ -19,6 +19,10 @@
 #include "freertos/task.h"
 #include "registry.h"
 #include "signatures.h"
+#include "odid_util.h"
+extern "C" {
+#include "odid_wifi.h"
+}
 
 static const char* TAG = "wifi";
 
@@ -120,6 +124,9 @@ bool radio_wifi_encode_aps(ss_cbor_w_t* w) {
     return !w->err;
 }
 
+// Single-threaded promiscuous callback only (upstream rule): file-static, about 1 KB.
+static ODID_UAS_Data s_wifiUas;
+
 // ---- detection helpers (ported) ------------------------------------------------
 struct WifiInfo {
     uint8_t frame = WF_NONE;
@@ -133,7 +140,7 @@ struct WifiInfo {
 };
 
 static void post(const uint8_t mac[6], int rssi, int ch, const char* rule, const char* category,
-                 int confidence, int best, const WifiInfo* wi) {
+                 int confidence, int best, bool drone, const WifiInfo* wi) {
     STAT_INC(g_stats.wifi_hit);
     ThreatType t = threat_from_category(category);
     if (t == ThreatType::UNKNOWN || !type_enabled(t, g_cfg)) { STAT_INC(g_stats.wifi_drop); return; }
@@ -158,6 +165,8 @@ static void post(const uint8_t mac[6], int rssi, int ch, const char* rule, const
         memcpy(d.probe_ssid, wi->probe, sizeof(d.probe_ssid));
         memcpy(d.country, wi->country, sizeof(d.country));
     }
+    if (!wi) d.wifi_frame = WF_NAN;
+    if (drone && odid_useful(s_wifiUas)) odid_apply(d, s_wifiUas);
     post_detection(d, confidence, best);
 }
 
@@ -200,7 +209,21 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (length < 24) return;
 
     uint8_t fsubtype = (payload[0] >> 4) & 0x0F;
+    uint8_t* addr1 = payload + 4;
     uint8_t* addr2 = payload + 10;
+
+    // Remote ID over Wi-Fi NAN: an action frame addressed to the ASTM NAN cluster
+    static const uint8_t nanDest[6] = {0x51, 0x6F, 0x9A, 0x01, 0x00, 0x00};
+    if (memcmp(nanDest, addr1, 6) == 0) {
+        memset(&s_wifiUas, 0, sizeof(s_wifiUas));
+        char nanMac[6] = {0};
+        if (g_cfg.detect_drone &&
+            odid_wifi_receive_message_pack_nan_action_frame(&s_wifiUas, nanMac, payload, length) == 0 &&
+            odid_useful(s_wifiUas)) {
+            post((const uint8_t*)nanMac, rssi, rxCh, "Remote ID Drone", "Drone", W_DRONE, W_DRONE, true, nullptr);
+        }
+        return;
+    }
 
     // Probe request (4), probe response (5), beacon (8)
     if (!(fsubtype == 4 || fsubtype == 5 || fsubtype == 8)) return;
@@ -208,7 +231,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     int conf = 0, best = 0;
     const char* rule = nullptr;
     const char* cat  = nullptr;
-    bool flockOui = false;
+    bool flockOui = false, drone = false;
     int dsCh = 0;
     char foundSsid[33] = {0};
     WifiInfo wi;
@@ -269,13 +292,18 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
                 if (W_WIFI_IE > best) { best = W_WIFI_IE; rule = "Lite-On Vendor IE (weak)"; }
             }
 
-            // Remote ID in a beacon vendor IE (ASTM 90:3A:E6 / French FA:0B:BC).
-            // Flagged here; the payload decode comes with GET_DEVICE_PROFILE.
+            // Remote ID in a beacon vendor IE (ASTM 90:3A:E6 / French FA:0B:BC)
             if (id == 221 && elen >= 6 &&
                 ((e[0]==0x90 && e[1]==0x3A && e[2]==0xE6) ||
                  (e[0]==0xFA && e[1]==0x0B && e[2]==0xBC))) {
+                drone = true;
                 conf += W_DRONE;
                 if (W_DRONE > best) { best = W_DRONE; rule = "Remote ID Drone"; cat = "Drone"; }
+                int odidLen = (int)elen - 5;                 // OUI(3) + type(1) + counter(1)
+                if (odidLen > 0) {
+                    memset(&s_wifiUas, 0, sizeof(s_wifiUas));
+                    odid_decode_into(s_wifiUas, e + 5, (size_t)odidLen);
+                }
             }
 
             // DJI DroneID (proprietary, pre-Remote-ID): vendor IE OUI 26:37:12,
@@ -347,7 +375,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
         wi.sec = rsn ? rsnSec : wpa1 ? (uint8_t)SEC_WPA : privacy ? (uint8_t)SEC_WEP : (uint8_t)SEC_OPEN;
         memcpy(wi.ssid, foundSsid, sizeof(wi.ssid));
     }
-    post(addr2, rssi, dsCh ? dsCh : rxCh, rule, cat, conf, best, &wi);
+    post(addr2, rssi, dsCh ? dsCh : rxCh, rule, cat, conf, best, drone, &wi);
 }
 
 // ---- channel hopping --------------------------------------------------------------

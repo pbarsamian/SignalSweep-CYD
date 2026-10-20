@@ -19,6 +19,7 @@
 #include "host/util/util.h"
 #include "registry.h"
 #include "signatures.h"
+#include "odid_util.h"
 
 static const char* TAG = "ble";
 
@@ -181,8 +182,23 @@ static bool ble_penguin(const Adv& a) {
     return false;
 }
 
-// ---- upstream bleDecodeRemoteId(): UUID 0xFFFA service data (presence only for now) ---------------------
-static bool ble_has_remote_id(const Adv& a) { return find_sd(a, 0xFFFA, nullptr, nullptr); }
+// ---- upstream bleDecodeRemoteId(): UUID 0xFFFA service data ------------------------------------------------
+// ~1 KB; file-static to keep it off the NimBLE task stack (upstream does the same)
+static ODID_UAS_Data s_bleUas;
+
+// Presence alone means a drone broadcasting Remote ID. The ASTM F3411 BT4 framing is: UUID,
+// application code 0x0D, counter, then the 25-byte message (or a message pack).
+static bool ble_decode_remote_id(const Adv& a, bool* decoded) {
+    const uint8_t* d; uint8_t l;
+    if (!find_sd(a, 0xFFFA, &d, &l)) return false;
+    memset(&s_bleUas, 0, sizeof(s_bleUas));
+    *decoded = false;
+    if (l >= 2 + ODID_MESSAGE_SIZE && d[0] == 0x0D) {
+        odid_decode_into(s_bleUas, d + 2, (size_t)l - 2);
+        *decoded = odid_useful(s_bleUas);
+    }
+    return true;
+}
 
 // ---- descriptive fields for the info view (no effect on scoring) -----------------------------------------
 static void add_svc(Detection& d, uint16_t v) {
@@ -303,7 +319,9 @@ static void on_advert(const struct ble_gap_disc_desc* disc) {
 
     // Protocol detectors (upstream order): drone, AirTag, tracker network, Penguin
     const char* net = ble_tracker_network(a);
-    if (ble_has_remote_id(a)) {
+    bool drone = false, decoded = false;
+    if (ble_decode_remote_id(a, &decoded)) {
+        drone = true;
         confidence += W_DRONE;
         if (W_DRONE > best) { best = W_DRONE; rule = "Remote ID Drone"; category = "Drone"; }
     } else if (ble_is_airtag(a)) {
@@ -333,6 +351,7 @@ static void on_advert(const struct ble_gap_disc_desc* disc) {
     memcpy(d.mac, a.mac, 6);
     snprintf(d.name, sizeof(d.name), "%s", rule);
     capture_fields(a, d);
+    if (drone && decoded) odid_apply(d, s_bleUas);
     post_detection(d, confidence, best);
 }
 

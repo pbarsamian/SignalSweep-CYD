@@ -36,3 +36,4 @@ int  ui_active_tab();                         // the main loop polls the C5 base
 void ui_invalidate();                         // redraw everything (e.g. returning from charge mode)
 bool ui_wants_aps();                          // true while the SCOPE tab shows a Wi-Fi band
 bool ui_wants_ble();                          // true while the SCOPE tab shows the BLE view
+bool ui_wants_profile(char* mac_out);         // true while INFO shows a detection; copies its MAC text

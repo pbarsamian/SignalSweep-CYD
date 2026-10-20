@@ -43,6 +43,8 @@ typedef struct {
     const uint8_t* ptr;    // BYTES / TEXT data (TEXT is NOT NUL-terminated); for ARRAY / MAP,
                            // the first contained item (walk with ss_cbor_skip)
     size_t         n;      // BYTES / TEXT length, ARRAY / MAP item count
+    const uint8_t* head;   // the item's own first byte: pass it (and the remaining length) to
+                           // ss_cbor_map_get() to query a nested MAP in place
 } ss_cbor_val_t;
 
 // Find `key` in the top-level map of buf[0..len). True if found and the whole

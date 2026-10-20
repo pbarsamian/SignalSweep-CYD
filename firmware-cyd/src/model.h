@@ -59,6 +59,46 @@ struct Model {
     uint16_t list_total = 0;           // detections the C5 reported in its last list page
 };
 
+// Values mirrored from the C5's detection.h (they travel as plain integers on the wire)
+enum : uint8_t { AT_UNKNOWN = 0, AT_BLE_PUBLIC, AT_BLE_RANDOM_STATIC, AT_BLE_RPA, AT_BLE_NRPA, AT_WIFI_UNIVERSAL, AT_WIFI_LOCAL };
+enum : uint8_t { SEC_UNKNOWN = 0, SEC_OPEN, SEC_WEP, SEC_WPA, SEC_WPA2, SEC_WPA2_WPA3, SEC_WPA3, SEC_WPA2_ENT, SEC_WPA3_ENT, SEC_OWE };
+#define WSTD_N  0x01
+#define WSTD_AC 0x02
+#define WSTD_AX 0x04
+#define WSTD_BE 0x08
+
+// GET_DEVICE_PROFILE reply for ONE detection (the one the INFO page is showing)
+struct Profile {
+    bool     have = false;
+    char     mac[18] = {};
+    uint32_t got_ms = 0;
+    uint8_t  atype = 0;
+    int8_t   rmin = 0, rmax = 0;
+    bool     corr = false;
+    char     dev_name[24] = {};
+    int32_t  company = -1;
+    bool     has_txp = false;  int8_t txp = 0;
+    bool     has_appear = false; uint16_t appear = 0;
+    bool     has_apple = false; uint8_t apple = 0, apple_i = 0;
+    uint16_t svc[4] = {};  uint8_t nsvc = 0;
+    char     probe[33] = {};
+    bool     wifi = false;  uint8_t wsec = 0, wstd = 0;  uint16_t bint = 0;  bool hidden = false;
+    char     country[3] = {};
+    // Remote ID (positions are scaled integers on the wire: no floats in the CBOR)
+    bool     rid = false;
+    uint8_t  uat = 0;
+    char     uas[24] = {}, op[24] = {};
+    bool     loc = false;       int32_t lat_e6 = 0, lon_e6 = 0;
+    bool     has_h = false;     int32_t h_dm = 0;
+    bool     has_alt = false;   int32_t alt_dm = 0;
+    bool     has_spd = false;   int32_t spd_cms = 0;
+    bool     has_vs = false;    int32_t vs_cms = 0;
+    bool     has_hdg = false;   int32_t hdg = 0;
+    bool     op_pos = false;    int32_t olat_e6 = 0, olon_e6 = 0;
+};
+extern Profile g_profile;
+bool model_ingest_profile(const uint8_t* cbor, size_t n);
+
 extern Model g_model;
 
 // A detection map (an item of LIST_DETECTIONS, or an SS_EVT_DETECTION body). Returns the slot

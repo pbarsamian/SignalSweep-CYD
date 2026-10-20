@@ -22,6 +22,7 @@
 #include "selftest.h"
 #include "status_ui.h"
 #include "model.h"
+#include "theme.h"
 #include "ui.h"
 
 // ---- pins (LOCKED in BUILD_MANIFEST.md section 2) ----------------------------
@@ -123,7 +124,15 @@ static void send_list(uint32_t offset) {
     g_link.send_req(SS_OP_LIST_DETECTIONS, nullptr, buf, w.len);
 }
 
-static bool s_print_aps = false, s_print_list = false, s_print_ble = false;   // console 'w' / 'l' want the text dump
+static bool s_print_aps = false, s_print_list = false, s_print_ble = false, s_print_profile = false;
+
+static void send_profile(const char* mac) {
+    uint8_t buf[48];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
+    ss_cbor_map(&w, 1);
+    ss_cbor_kv_text(&w, "mac", mac);
+    g_link.send_req(SS_OP_GET_DEVICE_PROFILE, nullptr, buf, w.len);
+}   // console 'w' / 'l' want the text dump
 
 // Charge mode mirrors whatever the C5 reports (it owns the state: it measures the battery and
 // enforces the 3.4 V forced entry / 4.0 V forced exit). The screen follows.
@@ -279,6 +288,18 @@ static void on_resp(uint8_t op, uint8_t status, const uint8_t* cb, size_t n, uin
         if (s_print_aps) { s_print_aps = false; print_aps(cb, n); }
         return;
     }
+    if (op == SS_OP_GET_DEVICE_PROFILE) {
+        if (status == SS_OK) {
+            model_ingest_profile(cb, n);
+            if (s_print_profile) {
+                s_print_profile = false;
+                Serial.printf("[profile] %s atype=%u rid=%d uas=%s op=%s lat=%.5f lon=%.5f h=%.1fm hdg=%d\n", g_profile.mac,
+                              g_profile.atype, g_profile.rid, g_profile.uas, g_profile.op, g_profile.lat_e6 / 1e6,
+                              g_profile.lon_e6 / 1e6, g_profile.h_dm / 10.0, (int)g_profile.hdg);
+            }
+        } else if (s_print_profile) { s_print_profile = false; Serial.println("[profile] none (no such detection)"); }
+        return;
+    }
     if (op == SS_OP_SCAN_BLE && status == SS_OK) {
         model_ingest_ble(cb, n);
         if (s_print_ble) { s_print_ble = false; print_ble(cb, n); }
@@ -360,6 +381,13 @@ static void console() {
         case 'c': if (c5.link_up) send_set_power(true);  else set_last("no link: cannot enter charge mode"); break;
         case 'e': if (c5.link_up) send_set_power(false); break;
         case 't': s_sim_touch = true; break;                       // simulate a screen tap
+        case 'p': {                                                // profile of the first listed detection
+            int i = -1;
+            for (int k = 0; k < g_model.ndets; k++) if (g_model.dets[k].used && g_model.dets[k].type != T_UNKNOWN) { i = k; break; }
+            if (i < 0) Serial.println("[profile] no detections yet");
+            else { s_print_profile = true; send_profile(g_model.dets[i].mac); }
+            break;
+        }
         case 'u': send_simple(0x7E); break;                        // unknown: expect ERR_OPCODE
         case 'x': {                                                // corrupt CRC: expect NACK ERR_CRC
             size_t n = g_link.build_req_frame(frame, sizeof(frame), SS_OP_GET_STATUS, nullptr, 0);
@@ -373,7 +401,7 @@ static void console() {
         }
         case '?':
             Serial.println("h HELLO  s STATUS  w SCAN_WIFI  b SCAN_BLE  l LIST  g GATT(no token)  "
-                           "a TX_SLOT_A(no token)  u unknown-op  x bad-CRC  v bad-version  c charge-on  e charge-off  t tap");
+                           "a TX_SLOT_A(no token)  u unknown-op  x bad-CRC  v bad-version  c charge-on  e charge-off  t tap  p profile");
             break;
         default: break;
         }
@@ -475,6 +503,9 @@ void loop() {
     if (c5.link_up && !s_charge_ui && c5.power == SS_POWER_NORMAL) {
         if ((int32_t)(now - next_list_ms) >= 0 && !g_link.busy()) { next_list_ms = now + 2000; send_list(0); }
         if (ui_wants_aps() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_WIFI); }
+        char pmac[18];
+        static uint32_t next_prof_ms = 0;
+        if (ui_wants_profile(pmac) && (int32_t)(now - next_prof_ms) >= 0 && !g_link.busy()) { next_prof_ms = now + 2000; send_profile(pmac); }
         if (ui_wants_ble() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_BLE); }
     }
 

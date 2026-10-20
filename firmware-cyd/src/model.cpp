@@ -4,6 +4,7 @@
 #include "theme.h"
 
 Model g_model;
+Profile g_profile;
 
 static void copy_text(char* dst, size_t cap, const ss_cbor_val_t& v) {
     size_t n = v.n < cap - 1 ? v.n : cap - 1;
@@ -155,6 +156,63 @@ void model_ingest_ble(const uint8_t* cb, size_t n) {
     g_model.nble = cnt;
     g_model.ble_total = (uint16_t)total;
     g_model.ble_ms = now;
+}
+
+bool model_ingest_profile(const uint8_t* cb, size_t n) {
+    ss_cbor_val_t v, rid;
+    if (!ss_cbor_map_get(cb, n, "mac", &v) || v.type != SS_CBOR_TEXT) return false;
+    Profile& p = g_profile;
+    p = Profile();
+    copy_text(p.mac, sizeof(p.mac), v);
+    p.have = true;
+    p.got_ms = millis();
+    uint32_t u = 0; bool b = false;
+    if (ss_cbor_get_uint(cb, n, "atype", &u)) p.atype = (uint8_t)u;
+    if (ss_cbor_map_get(cb, n, "rmin", &v)) p.rmin = (int8_t)v.i;
+    if (ss_cbor_map_get(cb, n, "rmax", &v)) p.rmax = (int8_t)v.i;
+    if (ss_cbor_get_bool(cb, n, "corr", &b)) p.corr = b;
+    if (ss_cbor_map_get(cb, n, "dev_name", &v) && v.type == SS_CBOR_TEXT) copy_text(p.dev_name, sizeof(p.dev_name), v);
+    if (ss_cbor_get_uint(cb, n, "company", &u)) p.company = (int32_t)u;
+    if (ss_cbor_map_get(cb, n, "txp", &v)) { p.has_txp = true; p.txp = (int8_t)v.i; }
+    if (ss_cbor_get_uint(cb, n, "appear", &u)) { p.has_appear = true; p.appear = (uint16_t)u; }
+    if (ss_cbor_get_uint(cb, n, "apple", &u)) { p.has_apple = true; p.apple = (uint8_t)u; if (ss_cbor_get_uint(cb, n, "apple_i", &u)) p.apple_i = (uint8_t)u; }
+    if (ss_cbor_map_get(cb, n, "svc", &v) && v.type == SS_CBOR_ARRAY) {
+        const uint8_t* q = v.ptr; const uint8_t* end = cb + n;
+        for (size_t i = 0; i < v.n && p.nsvc < 4; i++) {
+            const uint8_t* it = q;                                    // items are bare unsigned integers
+            uint8_t head = *it;
+            if ((head >> 5) == 0) {                                   // major type 0
+                uint32_t val = head & 0x1F;
+                if (head == 0x18) val = it[1]; else if (head == 0x19) val = (it[1] << 8) | it[2];
+                p.svc[p.nsvc++] = (uint16_t)val;
+            }
+            if (!ss_cbor_skip(&q, end)) break;
+        }
+    }
+    if (ss_cbor_map_get(cb, n, "probe", &v) && v.type == SS_CBOR_TEXT) copy_text(p.probe, sizeof(p.probe), v);
+    if (ss_cbor_get_uint(cb, n, "wsec", &u)) {
+        p.wifi = true; p.wsec = (uint8_t)u;
+        if (ss_cbor_get_uint(cb, n, "wstd", &u)) p.wstd = (uint8_t)u;
+        if (ss_cbor_get_uint(cb, n, "bint", &u)) p.bint = (uint16_t)u;
+        if (ss_cbor_get_bool(cb, n, "hidden", &b)) p.hidden = b;
+    }
+    if (ss_cbor_map_get(cb, n, "country", &v) && v.type == SS_CBOR_TEXT) copy_text(p.country, sizeof(p.country), v);
+    if (ss_cbor_map_get(cb, n, "rid", &rid) && rid.type == SS_CBOR_MAP) {
+        const uint8_t* m = rid.head; size_t ml = (cb + n) - m;      // the nested map, header included
+        p.rid = true;
+        if (ss_cbor_get_uint(m, ml, "uat", &u)) p.uat = (uint8_t)u;
+        if (ss_cbor_map_get(m, ml, "uas", &v) && v.type == SS_CBOR_TEXT) copy_text(p.uas, sizeof(p.uas), v);
+        if (ss_cbor_map_get(m, ml, "op", &v) && v.type == SS_CBOR_TEXT) copy_text(p.op, sizeof(p.op), v);
+        ss_cbor_val_t a, o;
+        if (ss_cbor_map_get(m, ml, "lat", &a) && ss_cbor_map_get(m, ml, "lon", &o)) { p.loc = true; p.lat_e6 = (int32_t)a.i; p.lon_e6 = (int32_t)o.i; }
+        if (ss_cbor_map_get(m, ml, "h_dm", &a))    { p.has_h = true;   p.h_dm = (int32_t)a.i; }
+        if (ss_cbor_map_get(m, ml, "alt_dm", &a))  { p.has_alt = true; p.alt_dm = (int32_t)a.i; }
+        if (ss_cbor_map_get(m, ml, "spd_cms", &a)) { p.has_spd = true; p.spd_cms = (int32_t)a.i; }
+        if (ss_cbor_map_get(m, ml, "vs_cms", &a))  { p.has_vs = true;  p.vs_cms = (int32_t)a.i; }
+        if (ss_cbor_map_get(m, ml, "hdg", &a))     { p.has_hdg = true; p.hdg = (int32_t)a.i; }
+        if (ss_cbor_map_get(m, ml, "olat", &a) && ss_cbor_map_get(m, ml, "olon", &o)) { p.op_pos = true; p.olat_e6 = (int32_t)a.i; p.olon_e6 = (int32_t)o.i; }
+    }
+    return true;
 }
 
 int model_visible_count() {

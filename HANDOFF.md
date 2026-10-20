@@ -131,6 +131,14 @@
   radio through the IDF coexistence arbiter: AP counts unchanged, but Wi-Fi mgmt frames fell from about
   40-65 to 20-30 per 5 s, so one-shot frames (probe requests) are caught less often. A scan scheduler
   that time-slices them is the fix if that matters.
+- **Remote ID + profiles (2026-10-19):** the vendored OpenDroneID core (Apache-2.0, unmodified; a per-file
+  CMake option relaxes one -Werror=format it trips on the C5) now decodes Remote ID from Wi-Fi beacon IEs, Wi-Fi
+  NAN action frames and BLE service data 0xFFFA. GET_DEVICE_PROFILE returns everything the C5 knows about a
+  detection (identity, signal range, BLE / Wi-Fi fields, decoded Remote ID with scaled-integer positions); the
+  CYD INFO page polls it every 2 s and shows the rows. Verified: a 15-case on-device self-test (encode a
+  message pack, decode through the radios' path, check every field) and a synthetic drone (SS_RID_INJECT_TEST,
+  default 0) travelling decode -> registry -> alert event -> LIST -> profile reply. NOT verified with a real drone.
+- C5 flash layout: custom partitions.csv, 3 MB factory app (the BT stack made the image 1.4 MB).
 - Passive-scan limit: a device whose name is only in a scan response is never named, so the name rules
   (flock, flipper, penguin-NNNNNNNNNN) can miss it. Active scanning would be an ACTIVE op behind consent.
 - No BLE positive test has been run yet (no matching hardware nearby): a phone running nRF Connect that

@@ -19,6 +19,8 @@ bool     det_encode_list(ss_cbor_w_t* w, uint32_t offset);   // LIST_DETECTIONS 
 bool     det_encode_aps(ss_cbor_w_t* w);             // SCAN_WIFI result (seen APs)
 bool     det_encode_ble(ss_cbor_w_t* w);             // SCAN_BLE result (seen BLE devices)
 bool     det_pop_event(ss_cbor_w_t* w);              // next pending detection event, if any
+// GET_DEVICE_PROFILE: everything the C5 knows about one detection (by MAC text). False if unknown.
+bool     det_encode_profile(const char* mac_text, ss_cbor_w_t* w);
 uint32_t det_count(void);
 void     det_tick(void);                             // housekeeping: prune stale, log stats
 

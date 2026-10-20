@@ -5,8 +5,10 @@ CONFIG_FREERTOS_HZ=1000
 
 # XIAO ESP32-C5 has 8 MB of flash (the boot log showed the 2 MB header mismatch).
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
-# Larger single factory app (no OTA) so BLE + Remote ID fit.
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Custom table: 3 MB factory app (no OTA), see partitions.csv.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
 
 # Power management: lets charge mode drop the CPU clock to 80 MHz.
 CONFIG_PM_ENABLE=y

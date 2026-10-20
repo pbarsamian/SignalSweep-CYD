@@ -34,6 +34,12 @@ static uint32_t s_beep_until = 0, s_led_until = 0;
 
 int  ui_active_tab() { return s_tab; }
 bool ui_wants_aps() { return s_tab == TAB_SCOPE && !s_diag && s_scope_band != 0; }
+bool ui_wants_profile(char* mac_out) {
+    if (s_tab != TAB_INFO || !s_have_sel || s_diag) return false;
+    strncpy(mac_out, s_sel_mac, 18);
+    mac_out[17] = 0;
+    return true;
+}
 bool ui_wants_ble() { return s_tab == TAB_SCOPE && !s_diag && s_scope_band == 0; }
 void ui_invalidate() { s_dirty = true; s_hdr_dirty = true; }
 
@@ -210,6 +216,7 @@ static const uint8_t CH5[] = { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 11
 
 // Company IDs we can name without a database: the ones our own rules reference (Apple is the
 // 0x004C in the AirTag logic; Luxottica, Snap and Flipper are rule entries) plus a few very common ones.
+const char* company_name_ui(uint16_t id);
 static const char* company_name(uint16_t id) {
     switch (id) {
         case 0x004C: return "Apple";
@@ -222,6 +229,8 @@ static const char* company_name(uint16_t id) {
     }
     return nullptr;
 }
+
+const char* company_name_ui(uint16_t id) { return company_name(id); }
 
 static void draw_ble_canvas(int sx, int sy, int sw, int sh) {
     tft.fillRect(sx, sy, sw, sh, C_BLACK);
@@ -466,13 +475,93 @@ static void draw_list() {
 #define DSTRIP_W 16
 
 struct DRow { char k[14]; char v[44]; };
-static DRow s_rows[16];
+static DRow s_rows[40];
 static int  s_nrows = 0;
 static Det  s_sel_last;
 static bool s_sel_gone = false;
 
-#define ROW(key, ...) do { if (s_nrows < 16) { strncpy(s_rows[s_nrows].k, key, 13); s_rows[s_nrows].k[13] = 0; \
+#define ROW(key, ...) do { if (s_nrows < 40) { strncpy(s_rows[s_nrows].k, key, 13); s_rows[s_nrows].k[13] = 0; \
                            snprintf(s_rows[s_nrows].v, 44, __VA_ARGS__); s_nrows++; } } while (0)
+
+static const char* addr_type_str(uint8_t t) {
+    switch (t) {
+        case AT_BLE_PUBLIC:        return "BLE public (IEEE)";
+        case AT_BLE_RANDOM_STATIC: return "BLE random static";
+        case AT_BLE_RPA:           return "BLE private (rotating)";
+        case AT_BLE_NRPA:          return "BLE random (non-resolvable)";
+        case AT_WIFI_UNIVERSAL:    return "WiFi universal (IEEE)";
+        case AT_WIFI_LOCAL:        return "WiFi local / randomized";
+        default:                   return "Unknown";
+    }
+}
+
+static const char* wifi_sec_str(uint8_t s) {
+    switch (s) {
+        case SEC_OPEN:      return "Open (no encryption)";
+        case SEC_WEP:       return "WEP";
+        case SEC_WPA:       return "WPA (TKIP)";
+        case SEC_WPA2:      return "WPA2-Personal";
+        case SEC_WPA2_WPA3: return "WPA2/WPA3 transition";
+        case SEC_WPA3:      return "WPA3-Personal (SAE)";
+        case SEC_WPA2_ENT:  return "WPA2-Enterprise";
+        case SEC_WPA3_ENT:  return "WPA3-Enterprise 192";
+        case SEC_OWE:       return "Enhanced Open (OWE)";
+        default:            return nullptr;
+    }
+}
+
+static const char* ua_type_str(uint8_t t) {              // ASTM F3411 UA types
+    static const char* const T[] = { "Not declared", "Aeroplane", "Helicopter / multirotor", "Gyroplane",
+        "Hybrid lift (VTOL)", "Ornithopter", "Glider", "Kite", "Free balloon", "Captive balloon", "Airship",
+        "Free fall / parachute", "Rocket", "Tethered powered aircraft", "Ground obstacle", "Other" };
+    return t < 16 ? T[t] : "Unknown";
+}
+
+extern const char* company_name_ui(uint16_t id);
+
+// Rows from GET_DEVICE_PROFILE: only when the profile belongs to the device on screen
+static void add_profile_rows(const Det& d) {
+    const Profile& p = g_profile;
+    if (!p.have || strcmp(p.mac, d.mac) != 0) { ROW("Profile", "loading..."); return; }
+    char t[44];
+    ROW("Address", "%s", addr_type_str(p.atype));
+    if (p.rmin || p.rmax) ROW("RSSI range", "%d to %d dBm", p.rmin, p.rmax);
+    if (p.corr) ROW("Corroborated", "same MAC on BLE and Wi-Fi");
+    if (p.dev_name[0]) ROW("Device name", "%s", p.dev_name);
+    if (p.company >= 0) {
+        const char* c = company_name_ui((uint16_t)p.company);
+        if (c) ROW("BT company", "%s (0x%04X)", c, (unsigned)p.company); else ROW("BT company", "0x%04X", (unsigned)p.company);
+    }
+    if (p.has_txp) ROW("TX power", "%d dBm", p.txp);
+    if (p.has_appear) ROW("Appearance", "0x%04X", p.appear);
+    if (p.has_apple) ROW("Apple", "Continuity type 0x%02X", p.apple);
+    for (int i = 0; i < p.nsvc; i++) ROW("Service", "0x%04X", p.svc[i]);
+    if (p.hidden) ROW("SSID", "(hidden network)");
+    if (p.probe[0]) ROW("Probing for", "%s", p.probe);
+    if (p.wifi) {
+        const char* sec = wifi_sec_str(p.wsec);
+        if (sec) ROW("Security", "%s", sec);
+        if (p.wstd) {
+            const char* st = (p.wstd & WSTD_BE) ? "802.11be (WiFi 7)" : (p.wstd & WSTD_AX) ? "802.11ax (WiFi 6)" :
+                             (p.wstd & WSTD_AC) ? "802.11ac (WiFi 5)" : "802.11n (WiFi 4)";
+            ROW("Standard", "%s", st);
+        }
+        if (p.country[0]) ROW("Country", "%s", p.country);
+        if (p.bint) ROW("Beacon int.", "%u TU (%u ms)", p.bint, (unsigned)((p.bint * 1024UL) / 1000));
+    }
+    if (p.rid) {                                        // ASTM F3411 Remote ID, decoded on the C5
+        if (p.uas[0]) { ROW("UAS ID", "%s", p.uas); ROW("UA type", "%s", ua_type_str(p.uat)); }
+        if (p.op[0])  ROW("Operator ID", "%s", p.op);
+        if (p.loc)    ROW("Drone pos", "%.5f, %.5f", p.lat_e6 / 1e6, p.lon_e6 / 1e6);
+        if (p.has_h)   ROW("Height AGL", "%.0f m", p.h_dm / 10.0);
+        if (p.has_alt) ROW("Altitude", "%.0f m (WGS84)", p.alt_dm / 10.0);
+        if (p.has_spd) ROW("Speed", "%.1f m/s (%.0f km/h)", p.spd_cms / 100.0, p.spd_cms * 0.036);
+        if (p.has_vs)  ROW("Vert. speed", "%+.1f m/s", p.vs_cms / 100.0);
+        if (p.has_hdg) ROW("Heading", "%d deg", (int)p.hdg);
+        if (p.op_pos)  ROW("Pilot pos", "%.5f, %.5f", p.olat_e6 / 1e6, p.olon_e6 / 1e6);
+    }
+    (void)t;
+}
 
 static void build_rows(const Det& d, uint32_t now) {
     s_nrows = 0;
@@ -492,7 +581,7 @@ static void build_rows(const Det& d, uint32_t now) {
     ROW("Times heard", "%u", (unsigned)d.seen);
     ROW("Alert", "%s (strongest %d)", d.best >= CONF_ALERT_MIN ? "yes" : "no", d.best);
     ROW("Muted", "%s", d.muted ? "Yes" : "No");
-    ROW("Profile", "pending (C5 focus mode)");
+    add_profile_rows(d);
 }
 
 static const char* SUB_NAMES[] = { "INFO", "LINKS", "TRAFF", "RAW", "HUNT", "CAP" };
