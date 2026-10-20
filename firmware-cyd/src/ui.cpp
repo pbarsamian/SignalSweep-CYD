@@ -24,7 +24,7 @@ static bool     s_hdr_dirty = true;
 static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
 static int      s_set_page = 0;          // 0 alerts, 1 device
 static int      s_scroll = 0;            // LIST / INFO scroll offset
-static int      s_scope_band = 2;        // 2 = 2.4 GHz, 5 = 5 GHz
+static int      s_scope_band = 2;        // 2 = 2.4 GHz, 5 = 5 GHz, 0 = BLE
 static uint32_t s_drawn_ms = 0;
 static char     s_sel_mac[18] = {};
 static bool     s_have_sel = false;
@@ -33,7 +33,8 @@ static uint32_t s_toast_until = 0;
 static uint32_t s_beep_until = 0, s_led_until = 0;
 
 int  ui_active_tab() { return s_tab; }
-bool ui_wants_aps() { return s_tab == TAB_SCOPE && !s_diag; }
+bool ui_wants_aps() { return s_tab == TAB_SCOPE && !s_diag && s_scope_band != 0; }
+bool ui_wants_ble() { return s_tab == TAB_SCOPE && !s_diag && s_scope_band == 0; }
 void ui_invalidate() { s_dirty = true; s_hdr_dirty = true; }
 
 static bool in_rect(int x, int y, int rx, int ry, int rw, int rh) {
@@ -207,6 +208,56 @@ static const uint8_t CH5[] = { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 11
                                132, 136, 140, 144, 149, 153, 157, 161, 165 };
 #define N5 ((int)sizeof(CH5))
 
+// Company IDs we can name without a database: the ones our own rules reference (Apple is the
+// 0x004C in the AirTag logic; Luxottica, Snap and Flipper are rule entries) plus a few very common ones.
+static const char* company_name(uint16_t id) {
+    switch (id) {
+        case 0x004C: return "Apple";
+        case 0x0006: return "Microsoft";
+        case 0x0075: return "Samsung";
+        case 0x00E0: return "Google";
+        case 0x0D53: return "Luxottica";
+        case 0x03C2: return "Snap";
+        case 0x0E29: return "Flipper";
+    }
+    return nullptr;
+}
+
+static void draw_ble_canvas(int sx, int sy, int sw, int sh) {
+    tft.fillRect(sx, sy, sw, sh, C_BLACK);
+    tft.drawRect(sx, sy, sw, sh, C_BORDER);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    char hdr[48];
+    snprintf(hdr, sizeof(hdr), "BLE (passive): %d heard", (int)g_model.ble_total);
+    tft.drawString(hdr, sx + 4, sy + 8, 1);
+    int rows = (sh - 18) / 11;                       // 8 px font + 3 px gap
+    for (int i = 0; i < rows && i < g_model.nble; i++) {
+        const BleRow& r = g_model.ble[i];
+        int y = sy + 18 + i * 11;
+        int w = (int)(((r.rssi + 100) / 60.0f) * 60.0f); w = w < 2 ? 2 : w > 60 ? 60 : w;
+        tft.fillRect(sx + 3, y, w, 8, C_SIGNAL);
+        tft.fillRect(sx + 3 + w, y, 60 - w, 8, C_PANEL);
+        char label[40];
+        const char* who = r.name[0] ? r.name : (r.has_company ? company_name(r.company) : nullptr);
+        if (who) snprintf(label, sizeof(label), "%s", who);
+        else if (r.has_company) snprintf(label, sizeof(label), "co 0x%04X", r.company);
+        else snprintf(label, sizeof(label), "%s", r.mac + 9);          // last 3 octets
+        tft.setTextColor(C_WHITE, C_BLACK);
+        tft.drawString(label, sx + 68, y + 4, 1);
+        char rb[8]; snprintf(rb, sizeof(rb), "%d", r.rssi);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(C_LTGREY, C_BLACK);
+        tft.drawString(rb, sx + sw - 4, y + 4, 1);
+        tft.setTextDatum(ML_DATUM);
+    }
+    if (g_model.nble == 0) {
+        tft.setTextColor(C_MDGREY, C_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("listening... (names need a scan response; passive scan can't ask)", sx + sw / 2, sy + sh / 2 + 6, 1);
+    }
+}
+
 static void draw_scope() {
     const int LMARGIN = 24, RMARGIN = 6;
     int sy = PAGE_Y + 1, sh = 84, sx = LMARGIN, sw = SCREEN_W - LMARGIN - RMARGIN;
@@ -223,7 +274,13 @@ static void draw_scope() {
     // Strength: -100 dBm -> 0, -40 dBm -> 80 (the standalone scope's mapping)
     auto strength = [](int rssi) { int v = (int)(((rssi + 100) / 60.0f) * 80.0f); return v < 0 ? 0 : v > 80 ? 80 : v; };
 
-    if (s_scope_band == 2) {
+    if (s_scope_band == 0) {
+        draw_ble_canvas(sx, sy, sw, sh);
+        int ya = sy + sh + 1;
+        tft.setTextColor(C_MDGREY, C_BLACK);
+        tft.setTextDatum(ML_DATUM);
+        tft.drawString("Ch", 0, ya + 3, 1);
+    } else if (s_scope_band == 2) {
         static uint8_t pow24[320];
         memset(pow24, 0, sizeof(pow24));
         for (int ch = 1; ch <= 11; ch++) {                       // channel guide lines
@@ -301,14 +358,14 @@ static void draw_scope() {
     tft.drawRect(sx + sw - 58, sy + 2, 56, 13, C_ACCENT);
     tft.setTextColor(C_ACCENT, C_PANEL);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(s_scope_band == 2 ? "2.4 GHz" : "5 GHz", sx + sw - 30, sy + 9, 1);
-    if (g_model.naps == 0) {
+    tft.drawString(s_scope_band == 2 ? "2.4 GHz" : s_scope_band == 5 ? "5 GHz" : "BLE", sx + sw - 30, sy + 9, 1);
+    if (s_scope_band != 0 && g_model.naps == 0) {
         tft.setTextColor(C_MDGREY, C_BLACK);
         tft.drawString("waiting for C5 scan data...", sx + sw / 2 - 20, sy + sh / 2, 1);
     }
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString(s_scope_band == 2 ? "2.4 GHz channels" : "5 GHz channels", sx + sw / 2, sy + sh + 22, 1);
+    tft.drawString(s_scope_band == 2 ? "2.4 GHz channels" : s_scope_band == 5 ? "5 GHz channels" : "BLE devices, strongest first", sx + sw / 2, sy + sh + 22, 1);
 
     // Detection rows under the scope
     int ry = sy + sh + 32, shown = 0;
@@ -657,7 +714,7 @@ void ui_touch(int tx, int ty) {
         return;
     }
     if (s_tab == TAB_SCOPE) {
-        if (in_rect(tx, ty, SCREEN_W - 6 - 58, PAGE_Y + 3, 60, 16)) { s_scope_band = (s_scope_band == 2) ? 5 : 2; s_dirty = true; return; }
+        if (in_rect(tx, ty, SCREEN_W - 6 - 58, PAGE_Y + 3, 60, 16)) { s_scope_band = (s_scope_band == 2) ? 5 : (s_scope_band == 5) ? 0 : 2; s_dirty = true; return; }
         // tap a detection row under the scope: open it
         int ry0 = PAGE_Y + 1 + 84 + 32;
         if (ty >= ry0) {

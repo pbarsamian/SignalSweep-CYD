@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "registry.h"
 #include "radio_wifi.h"
+#include "radio_ble.h"
 #include "signatures.h"
 
 #define LIST_PAGE 10                 // entries per LIST_DETECTIONS reply (keeps it well under one frame)
@@ -39,10 +40,11 @@ extern "C" {
 
 void det_api_start(bool radio_on) {
     registry_init();
-    radio_wifi_start(radio_on);
+    radio_wifi_start(radio_on);     // brings up NVS, the event loop and the Wi-Fi driver first
+    radio_ble_start(radio_on);
 }
 
-void det_radio_enable(bool on) { radio_wifi_set_enabled(on); }
+void det_radio_enable(bool on) { radio_wifi_set_enabled(on); radio_ble_set_enabled(on); }
 
 void det_set_config(int drone, int tracker, int camera, int bodycam, int attack) {
     if (drone   >= 0) g_cfg.detect_drone   = drone;
@@ -86,6 +88,7 @@ bool det_encode_list(ss_cbor_w_t* w, uint32_t offset) {
 }
 
 bool det_encode_aps(ss_cbor_w_t* w) { return radio_wifi_encode_aps(w); }
+bool det_encode_ble(ss_cbor_w_t* w) { return radio_ble_encode_devs(w); }
 
 bool det_pop_event(ss_cbor_w_t* w) {
     DetEvent ev;
@@ -108,7 +111,7 @@ void det_tick(void) {
     if (now - last_prune >= 1000) { last_prune = now; registry_prune(); }
     // Stats line: every 5 s while scanning, every 60 s in charge mode (fewer wake-ups)
     uint32_t log_every = radio_wifi_enabled() ? 5000 : 60000;
-    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); }
+    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); radio_ble_log_stats(); }
 }
 
 }  // extern "C"

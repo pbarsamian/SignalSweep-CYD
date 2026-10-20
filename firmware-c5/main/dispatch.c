@@ -7,9 +7,8 @@
 //      stale if the CYD is silent for SS_SHADOW_STALE_MS.
 //   5. Token per op: ACTIVE ops need a valid, fresh, single-use token.
 //   7. PASSIVE means passive: nothing in this file transmits RF.
-// M3a scope: HELLO / SET_MODE / GET_STATUS, SCAN_WIFI (real, dual-band passive),
-// LIST_DETECTIONS and SUBSCRIBE_EVENTS are real. SCAN_BLE is still CANNED (flagged
-// "canned":true) until the BLE radio lands; everything else that passes the gate
+// M3b scope: HELLO / SET_MODE / GET_STATUS, SCAN_WIFI (real, dual-band passive), SCAN_BLE (real,
+// passive), LIST_DETECTIONS and SUBSCRIBE_EVENTS are real; everything else that passes the gate
 // answers SS_ERR_UNIMPL until its milestone lands.
 #include "dispatch.h"
 #include <string.h>
@@ -26,7 +25,7 @@
 #include "power.h"
 
 static const char* TAG = "dispatch";
-#define FW_NAME "c5-m3a"
+#define FW_NAME "c5-m3b"
 
 static struct {
     bool      valid;                              // a HELLO has established this shadow
@@ -180,6 +179,12 @@ static void op_scan_wifi(uint8_t seq) {
     send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
 }
 
+static void op_scan_ble(uint8_t seq) {
+    ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));
+    bool ok = det_encode_ble(&w);
+    send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
+}
+
 static void op_list_detections(uint8_t seq, const uint8_t* a, size_t n) {
     uint32_t offset = 0;
     if (n) (void)ss_cbor_get_uint(a, n, "offset", &offset);   // optional paging argument
@@ -205,6 +210,7 @@ static void op_scan_wifi_canned(uint8_t seq) {
     send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
 }
 
+static void op_scan_ble_canned(uint8_t seq) __attribute__((unused));
 static void op_scan_ble_canned(uint8_t seq) {
     uint8_t b[192];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
@@ -265,7 +271,7 @@ void dispatch_handle(const ss_frame_t* f) {
 
     switch (op) {
     case SS_OP_SCAN_WIFI:        op_scan_wifi(f->seq); return;
-    case SS_OP_SCAN_BLE:         op_scan_ble_canned(f->seq); return;
+    case SS_OP_SCAN_BLE:         op_scan_ble(f->seq); return;
     case SS_OP_LIST_DETECTIONS:  op_list_detections(f->seq, p, n); return;
     case SS_OP_SUBSCRIBE_EVENTS: S.subscribed = true; send_resp(f->seq, SS_OK, NULL, 0); return;
     case SS_OP_TX_SLOT_A: case SS_OP_TX_SLOT_B: case SS_OP_TX_SLOT_C: case SS_OP_TX_SLOT_D:

@@ -123,7 +123,7 @@ static void send_list(uint32_t offset) {
     g_link.send_req(SS_OP_LIST_DETECTIONS, nullptr, buf, w.len);
 }
 
-static bool s_print_aps = false, s_print_list = false;   // console 'w' / 'l' want the text dump
+static bool s_print_aps = false, s_print_list = false, s_print_ble = false;   // console 'w' / 'l' want the text dump
 
 // Charge mode mirrors whatever the C5 reports (it owns the state: it measures the battery and
 // enforces the 3.4 V forced entry / 4.0 V forced exit). The screen follows.
@@ -164,6 +164,25 @@ static void print_aps(const uint8_t* cb, size_t n) {
         if (!ss_cbor_skip(&p, end)) break;
     }
     set_last("APs: %u on 2.4G, %u on 5G", n2, n5);
+}
+
+static void print_ble(const uint8_t* cb, size_t n) {
+    ss_cbor_val_t arr;
+    if (!ss_cbor_map_get(cb, n, "devs", &arr) || arr.type != SS_CBOR_ARRAY) return;
+    const uint8_t* p = arr.ptr; const uint8_t* end = cb + n;
+    Serial.printf("[ble] %u devices\n", (unsigned)arr.n);
+    for (size_t i = 0; i < arr.n; i++) {
+        ss_cbor_val_t mac, name, rssi, company;
+        const uint8_t* item = p;
+        if (ss_cbor_map_get(item, end - item, "mac", &mac) && ss_cbor_map_get(item, end - item, "rssi", &rssi)) {
+            bool hn = ss_cbor_map_get(item, end - item, "name", &name) && name.n > 0;
+            bool hc = ss_cbor_map_get(item, end - item, "company", &company);
+            Serial.printf("[ble]  %4d dBm  %.*s  %.*s", (int)rssi.i, (int)mac.n, (const char*)mac.ptr, hn ? (int)name.n : 0, hn ? (const char*)name.ptr : "");
+            if (hc) Serial.printf("  co=0x%04X", (unsigned)company.u);
+            Serial.println();
+        }
+        if (!ss_cbor_skip(&p, end)) break;
+    }
 }
 
 static void print_list(const uint8_t* cb, size_t n) {
@@ -260,6 +279,11 @@ static void on_resp(uint8_t op, uint8_t status, const uint8_t* cb, size_t n, uin
         if (s_print_aps) { s_print_aps = false; print_aps(cb, n); }
         return;
     }
+    if (op == SS_OP_SCAN_BLE && status == SS_OK) {
+        model_ingest_ble(cb, n);
+        if (s_print_ble) { s_print_ble = false; print_ble(cb, n); }
+        return;
+    }
     if (op == SS_OP_LIST_DETECTIONS && status == SS_OK) {
         uint16_t next = model_ingest_list(cb, n);      // 0 when the sweep is complete
         if (next) send_list(next);
@@ -329,7 +353,7 @@ static void console() {
         case 'h': send_hello(); break;
         case 's': send_simple(SS_OP_GET_STATUS); break;
         case 'w': s_print_aps = true; send_simple(SS_OP_SCAN_WIFI); break;
-        case 'b': send_simple(SS_OP_SCAN_BLE); break;
+        case 'b': s_print_ble = true; send_simple(SS_OP_SCAN_BLE); break;
         case 'l': s_print_list = true; send_list(0); break;
         case 'g': send_simple(SS_OP_GATT_CONNECT_READ); break;     // gated: expect ERR_MODE
         case 'a': send_simple(SS_OP_TX_SLOT_A); break;             // gated: expect ERR_MODE
@@ -451,6 +475,7 @@ void loop() {
     if (c5.link_up && !s_charge_ui && c5.power == SS_POWER_NORMAL) {
         if ((int32_t)(now - next_list_ms) >= 0 && !g_link.busy()) { next_list_ms = now + 2000; send_list(0); }
         if (ui_wants_aps() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_WIFI); }
+        if (ui_wants_ble() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_BLE); }
     }
 
     if (!s_charge_ui) {

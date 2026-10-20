@@ -121,6 +121,42 @@ void model_ingest_aps(const uint8_t* cb, size_t n) {
     g_model.aps_ms = now;
 }
 
+void model_ingest_ble(const uint8_t* cb, size_t n) {
+    ss_cbor_val_t arr;
+    if (!ss_cbor_map_get(cb, n, "devs", &arr) || arr.type != SS_CBOR_ARRAY) return;
+    uint32_t total = 0;
+    ss_cbor_get_uint(cb, n, "total", &total);
+    const uint8_t* p = arr.ptr; const uint8_t* end = cb + n;
+    uint32_t now = millis();
+    BleRow tmp[MODEL_MAX_BLE];
+    int cnt = 0;
+    for (size_t i = 0; i < arr.n && cnt < MODEL_MAX_BLE; i++) {
+        const uint8_t* item = p;
+        ss_cbor_val_t mac, name, rssi, company, age;
+        if (ss_cbor_map_get(item, end - item, "mac", &mac) && ss_cbor_map_get(item, end - item, "rssi", &rssi)) {
+            BleRow& r = tmp[cnt++];
+            r = BleRow();
+            r.used = true;
+            copy_text(r.mac, sizeof(r.mac), mac);
+            if (ss_cbor_map_get(item, end - item, "name", &name)) copy_text(r.name, sizeof(r.name), name);
+            r.rssi = (int8_t)rssi.i;
+            if (ss_cbor_map_get(item, end - item, "company", &company)) { r.has_company = true; r.company = (uint16_t)company.u; }
+            uint32_t age_ms = ss_cbor_map_get(item, end - item, "age_ms", &age) ? (uint32_t)age.u : 0;
+            r.last_ms = now - age_ms;
+        }
+        if (!ss_cbor_skip(&p, end)) break;
+    }
+    for (int i = 1; i < cnt; i++) {                      // strongest first
+        BleRow k = tmp[i]; int j = i - 1;
+        while (j >= 0 && tmp[j].rssi < k.rssi) { tmp[j + 1] = tmp[j]; j--; }
+        tmp[j + 1] = k;
+    }
+    for (int i = 0; i < MODEL_MAX_BLE; i++) g_model.ble[i] = (i < cnt) ? tmp[i] : BleRow();
+    g_model.nble = cnt;
+    g_model.ble_total = (uint16_t)total;
+    g_model.ble_ms = now;
+}
+
 int model_visible_count() {
     int c = 0;
     for (int i = 0; i < g_model.ndets; i++) if (g_model.dets[i].used && g_model.dets[i].type != T_UNKNOWN) c++;
@@ -152,7 +188,9 @@ void model_clear() {
     // Reset in place: a Model temporary (about 5 KB) would land on the 8 KB Arduino loop stack
     for (int i = 0; i < MODEL_MAX_DETS; i++) g_model.dets[i] = Det();
     for (int i = 0; i < MODEL_MAX_APS; i++) g_model.aps[i] = ApRow();
-    g_model.ndets = g_model.naps = 0;
+    for (int i = 0; i < MODEL_MAX_BLE; i++) g_model.ble[i] = BleRow();
+    g_model.ndets = g_model.naps = g_model.nble = 0;
+    g_model.ble_total = 0; g_model.ble_ms = 0;
     g_model.aps_ms = g_model.list_ms = 0;
     g_model.list_total = 0;
 }

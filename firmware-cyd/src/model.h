@@ -7,6 +7,7 @@
 
 #define MODEL_MAX_DETS 32
 #define MODEL_MAX_APS  24
+#define MODEL_MAX_BLE  16
 
 struct Det {
     bool     used = false;
@@ -33,11 +34,25 @@ struct ApRow {
     uint32_t last_ms = 0;
 };
 
+struct BleRow {
+    bool     used = false;
+    char     mac[18] = {};
+    char     name[24] = {};
+    int8_t   rssi = -100;
+    bool     has_company = false;
+    uint16_t company = 0;
+    uint32_t last_ms = 0;
+};
+
 struct Model {
     Det   dets[MODEL_MAX_DETS];
     int   ndets = 0;
     ApRow aps[MODEL_MAX_APS];
     int   naps = 0;
+    BleRow ble[MODEL_MAX_BLE];
+    int   nble = 0;
+    uint16_t ble_total = 0;            // devices the C5 reported (it sends the 20 freshest; we keep 16)
+    uint32_t ble_ms = 0;
     uint32_t aps_ms = 0;               // when the AP table was last refreshed
     uint32_t list_ms = 0;              // when a full list sweep last completed
     uint8_t  sweep = 0;
@@ -53,6 +68,7 @@ int  model_ingest_det(const uint8_t* cbor, size_t n, bool* is_new, bool* alert);
 // complete (entries the C5 no longer lists are dropped when it completes).
 uint16_t model_ingest_list(const uint8_t* cbor, size_t n);
 void model_ingest_aps(const uint8_t* cbor, size_t n);
+void model_ingest_ble(const uint8_t* cbor, size_t n);   // SCAN_BLE reply; kept strongest-first
 
 Det* model_find(const char* mac);
 int  model_visible_count();                          // detections the UI shows (type != unknown)

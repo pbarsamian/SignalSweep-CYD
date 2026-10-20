@@ -123,7 +123,18 @@
   detaches GPIO21 from any LEDC channel set up BEFORE tft.init(). Brightness/dimming/screen-off did
   nothing until the LEDC setup was moved to after tft.init() (status_ui_init). Anything that touches the
   backlight must be set up after tft.init().
-- BLE is NOT scanning on the C5 yet (SCAN_BLE is canned): 2.4 GHz and 5 GHz are confirmed live.
+- **M3b (2026-10-19), verified on hardware:** passive BLE scanning on the C5 (ESP-IDF NimBLE, 100/50 ms,
+  duplicates kept, NO scan requests). BLE rules ported from the standalone scanner (signature rules with
+  AND semantics, exact UUID match, AirTag long form only, Google FMDN / Tile / Samsung, Flock Penguin;
+  Remote ID flagged by presence, not decoded). SCAN_BLE is real; the CYD SCOPE tab has a third view
+  (2.4 GHz / 5 GHz / BLE). Observed ~45 adverts per 5 s, 11 devices. Wi-Fi + BLE run together on the one
+  radio through the IDF coexistence arbiter: AP counts unchanged, but Wi-Fi mgmt frames fell from about
+  40-65 to 20-30 per 5 s, so one-shot frames (probe requests) are caught less often. A scan scheduler
+  that time-slices them is the fix if that matters.
+- Passive-scan limit: a device whose name is only in a scan response is never named, so the name rules
+  (flock, flipper, penguin-NNNNNNNNNN) can miss it. Active scanning would be an ACTIVE op behind consent.
+- No BLE positive test has been run yet (no matching hardware nearby): a phone running nRF Connect that
+  advertises service UUID 0xFEED should list as "Tile Tracker" (weight 70, alerts).
 - Not ported yet: BLE (scan + tracker logic), Remote ID decode (beacon IE is flagged but not
   decoded, NAN skipped), scan scheduler + FOCUS_TARGET, GET_DEVICE_PROFILE, the CYD detection UI.
 - Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),
