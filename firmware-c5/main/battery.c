@@ -69,6 +69,13 @@ static uint16_t sample_mv(void) {
 }
 
 uint16_t battery_mv(void) {
+#if SS_BATT_TEST_SWEEP
+    {
+        uint32_t t = (uint32_t)(esp_timer_get_time() / 1000);
+        if (t < 30000) return 3300;
+        if (t < 50000) return (uint16_t)(3300 + (t - 30000) * 800 / 20000);
+    }
+#endif
     if (!s_ok) return 0;
     int64_t now = esp_timer_get_time();
     if (s_cached_us == 0 || now - s_cached_us > 5000000) {

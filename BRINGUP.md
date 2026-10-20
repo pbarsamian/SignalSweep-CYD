@@ -89,6 +89,34 @@ Failure-direction checks:
 The dev console cannot change the mode or mint tokens. Entering TX_DETECTABLE needs the
 warning pop-up + touch-confirm (M4), and tokens need the consent flow (M6).
 
+## 5b. M3a: real Wi-Fi capture, detections, charge mode (verified 2026-10-19)
+
+The C5 now captures Wi-Fi passively on **2.4 GHz and 5 GHz** (channel hop, 110 ms dwell, about
+5 s per full sweep), scores frames with the ported signature engine, and streams detections.
+Serial-console checks on the CYD (keys as in section 5, plus `c` / `e`):
+
+| Key | Expect |
+|---|---|
+| `w` | `[aps] N access points` with `2G` and `5G` rows (verified: 21 on 2.4 GHz, 11 on 5 GHz) |
+| `l` | `[list] N detections` (0 unless a rule matched) |
+| `c` | CYD prints `[power] CHARGE MODE (user)`; C5 logs `radio OFF`, its `mgmt` count stops growing; `w` -> `ERR_BUSY` |
+| `e` | back to normal, `radio ON`, capture resumes |
+| (positive test) | a phone hotspot named `TELLO-TEST01` (2.4 GHz) lists as `DJI Tello drone (AP)` within a sweep and raises an ALERT event |
+
+**Charge mode.** On the CYD touchscreen the **CHARGE** button (top right of the status screen)
+enters it; tapping anywhere leaves a user-selected charge mode. In charge mode the screen is
+dim and shows only the battery voltage, the CPU runs at 80 MHz, and the C5 radio is fully off.
+**Forced entry:** the C5 switches to forced charge mode at or below 3.4 V, which cannot be left
+until the battery is above 4.0 V (taps and `e` are refused; the 4.0 V hold applies only to this
+forced state). A pack already low at boot starts in forced charge mode with the radio never
+switched on. On battery alone a forced session stays until the unit is plugged in.
+
+Verified on hardware: the 17-case on-device self-test of the decision logic; a simulated
+3300 mV -> 4100 mV battery sweep (forced at boot, radio off, exit and re-enter both answered
+`charge locked`, scan `ERR_BUSY`, released at 4028 mV, capture resumed); the user path.
+**Not yet verified:** how the charge screen and the CHARGE button look and feel on the actual
+CYD touchscreen (the logs only show the state changes), and a real battery drain to 3.4 V.
+
 ## 6. Known unknowns (tell me what you observe)
 
 - **Battery reading (verified plausible).** With a cell attached it read 3.95 V; with no cell it floats

@@ -16,6 +16,13 @@
 // under the floor is reported as unavailable (0) instead of a misleading voltage.
 #define SS_BATT_MIN_VALID_MV 2500
 
+// Test builds only: SS_BATT_TEST_SWEEP=1 replaces the reading for the first minute after boot:
+// 3300 mV for 30 s (forces charge mode), then ramps to 4100 mV over 20 s (exercises the 4.0 V
+// exit). Lets the forced path be run end to end without draining a real cell. Default 0.
+#ifndef SS_BATT_TEST_SWEEP
+#define SS_BATT_TEST_SWEEP 0
+#endif
+
 #define SS_BATT_EN_GPIO  26
 #define SS_BATT_ADC_GPIO 6
 

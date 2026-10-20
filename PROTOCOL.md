@@ -101,6 +101,7 @@ A RESP payload is `[STATUS u8][ CBOR map of result ]`.
 |--------|------|-------|-------|
 | 0x01 | `HELLO` | — | handshake, exchanges session secret + versions |
 | 0x02 | `SET_MODE` | — | CYD pushes authoritative mode to C5 shadow |
+| 0x04 | `SET_POWER` | — | user-selected charge mode on/off; refused while forced — see §3c |
 | 0x03 | `GET_STATUS` | — | radio state, mode shadow, queue depth, battery (`batt_mv`, `batt_low`) — see §3a |
 | 0x10 | `SCAN_WIFI` | PASSIVE | listen-only; no probe requests |
 | 0x11 | `SCAN_BLE` | PASSIVE | passive scan, no scan-requests |
@@ -164,6 +165,41 @@ Three missed replies mark the link down. On the C5, if no valid frame arrives fo
 `SS_SHADOW_STALE_MS` (10 s) the shadow latches **invalid + SILENT_RX**, the session
 secret is wiped, and ACTIVE ops are refused until a new HELLO. A lost link can only
 fail toward silence.
+
+### 3b-2. Detection data (M3a)
+
+`SCAN_WIFI` result: `{canned:false, total:n, aps:[{mac, ssid, ch, band(2|5), rssi, sec, age_ms}]}`
+(access points heard in the last 60 s, freshest first, at most 20). `LIST_DETECTIONS` takes an
+optional `{offset:u}` and returns `{total, offset, items:[detection]}` (10 per page). A
+`detection` is `{mac, name, type(0 drone,1 tracker,2 camera,3 bodycam,4 attack), conf, best,
+rssi, ch, band, radio("wifi"|"ble"|"both"), age_ms, seen, ssid?}`. `SUBSCRIBE_EVENTS` turns on
+`SS_EVT_DETECTION` events: the same map plus `new:bool, alert:bool`, sent when a detection is
+first listed or first reaches the alert threshold. A new HELLO clears the subscription.
+`SCAN_BLE` is still canned until the BLE radio lands.
+
+### 3c. Charge mode (power state)
+
+Orthogonal to the RF mode. In charge mode the **C5 radio is fully off** (promiscuous mode
+disabled, Wi-Fi driver stopped, hop task idle) and the **CYD shows only the battery voltage**
+(backlight dimmed, CPU slowed to 80 MHz, redraw only on change). The UART link stays up so the
+voltage keeps updating; scan opcodes return `SS_ERR_BUSY`.
+
+States (`ss_power_t`): `0 NORMAL`, `1 CHARGE_USER`, `2 CHARGE_FORCED`.
+
+- **The C5 owns the state** because it measures the battery. The CYD mirrors it (the status
+  event and `GET_STATUS` carry `power`).
+- **Selectable:** the CYD sends `SET_POWER {charge:bool}`. The user can enter and leave
+  `CHARGE_USER` freely.
+- **Forced:** at or below `SS_BATT_LOW_MV` (3400 mV) the C5 enters `CHARGE_FORCED` from either
+  other state. **The 4.0 V hold applies only to this forced state:** it is left only when the
+  battery exceeds `SS_BATT_EXIT_MV` (4000 mV). While forced, `SET_POWER` is answered
+  `SS_ERR_LOCKED` and the CYD ignores taps. A charge mode the user chose carries no such lock.
+- **Boot:** the C5 reads the battery before starting the radio. A pack already at or below the
+  threshold boots into `CHARGE_FORCED` with the RF front end never switched on.
+- **A reading of 0** (no cell or unusable) never forces charge mode. With no cell attached the
+  sense line floats near 2.3 V, which the firmware reports as 0.
+- **No USB means no exit:** a forced charge session on battery alone cannot reach 4.0 V, so the
+  unit stays in charge mode until it is plugged in. That is the intended behaviour.
 
 **Retry/timeouts.** A REQ unanswered after `SS_REQ_TIMEOUT_MS` (600 ms) is dropped
 by the CYD; there is no automatic resend.

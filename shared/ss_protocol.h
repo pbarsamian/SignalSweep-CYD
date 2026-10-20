@@ -44,6 +44,7 @@ typedef enum {
     SS_OP_HELLO             = 0x01, // handshake: versions + session secret
     SS_OP_SET_MODE          = 0x02, // CYD pushes authoritative mode to C5 shadow
     SS_OP_GET_STATUS        = 0x03,
+    SS_OP_SET_POWER         = 0x04, // charge mode on/off (refused while forced: SS_ERR_LOCKED)
 
     // PASSIVE — receive-only
     SS_OP_SCAN_WIFI         = 0x10, // listen-only; NO probe requests
@@ -74,7 +75,9 @@ typedef enum {
 } ss_event_kind_t;
 
 // Low-battery threshold for the STATUS event / GET_STATUS batt_low (millivolts). Tune.
-#define SS_BATT_LOW_MV  3400u
+#ifndef SS_BATT_LOW_MV
+#define SS_BATT_LOW_MV  3400u   // test builds may override with -DSS_BATT_LOW_MV=...
+#endif
 
 // ---- error codes (NACK payload / RESP status) -------------------------------
 typedef enum {
@@ -88,7 +91,22 @@ typedef enum {
     SS_ERR_BUSY     = 0x07, // radio busy / queue full
     SS_ERR_RADIO    = 0x08, // underlying RF failure
     SS_ERR_UNIMPL   = 0x09, // registry slot with no handler wired in
+    SS_ERR_LOCKED   = 0x0A, // forced charge mode: battery must rise above SS_BATT_EXIT_MV first
 } ss_err_t;
+
+// ---- power state (CHARGE MODE) ---------------------------------------------
+// Orthogonal to the RF mode below. In charge mode the C5 radio is off and the CYD
+// shows only the battery voltage. The C5 owns this state because it measures the
+// battery: it forces CHARGE at or below SS_BATT_LOW_MV and will not leave FORCED
+// until the voltage is back above SS_BATT_EXIT_MV. The CYD mirrors it.
+typedef enum {
+    SS_POWER_NORMAL        = 0,
+    SS_POWER_CHARGE_USER   = 1, // selected by the user; they can leave any time
+    SS_POWER_CHARGE_FORCED = 2, // battery low; locked until above SS_BATT_EXIT_MV
+} ss_power_t;
+#ifndef SS_BATT_EXIT_MV
+#define SS_BATT_EXIT_MV  4000u  // FORCED charge mode is held until the battery exceeds this
+#endif
 
 // ---- operating mode (authoritative on CYD, shadowed on C5) -------------------
 typedef enum {

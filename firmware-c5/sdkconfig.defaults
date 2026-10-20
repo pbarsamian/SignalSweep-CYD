@@ -2,3 +2,8 @@
 # UART1 free for the CYD link on GPIO9/GPIO10.
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_FREERTOS_HZ=1000
+
+# XIAO ESP32-C5 has 8 MB of flash (the boot log showed the 2 MB header mismatch).
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+# Larger single factory app (no OTA) so BLE + Remote ID fit.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

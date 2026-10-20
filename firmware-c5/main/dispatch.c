@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
-// dispatch.c — opcode -> handler, with the C5's own gate in front of every op.
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// dispatch.c â€” opcode -> handler, with the C5's own gate in front of every op.
 //
 // Invariants enforced here (BUILD_MANIFEST.md section 4):
 //   2. Boot silent: the shadow starts invalid (treated as SILENT_RX).
@@ -7,8 +7,9 @@
 //      stale if the CYD is silent for SS_SHADOW_STALE_MS.
 //   5. Token per op: ACTIVE ops need a valid, fresh, single-use token.
 //   7. PASSIVE means passive: nothing in this file transmits RF.
-// M2 scope: HELLO / SET_MODE / GET_STATUS are real; SCAN_WIFI / SCAN_BLE return
-// CANNED data (flagged "canned":true); everything else that passes the gate
+// M3a scope: HELLO / SET_MODE / GET_STATUS, SCAN_WIFI (real, dual-band passive),
+// LIST_DETECTIONS and SUBSCRIBE_EVENTS are real. SCAN_BLE is still CANNED (flagged
+// "canned":true) until the BLE radio lands; everything else that passes the gate
 // answers SS_ERR_UNIMPL until its milestone lands.
 #include "dispatch.h"
 #include <string.h>
@@ -21,9 +22,11 @@
 #include "uart_slave.h"
 #include "battery.h"
 #include "tx_slots.h"
+#include "detections_api.h"
+#include "power.h"
 
 static const char* TAG = "dispatch";
-#define FW_NAME "c5-m2"
+#define FW_NAME "c5-m3a"
 
 static struct {
     bool      valid;                              // a HELLO has established this shadow
@@ -34,6 +37,7 @@ static struct {
     int32_t   clk_offset;                         // CYD clock minus our clock, from HELLO
     uint32_t  last_evt_ms;
     bool      low_reported;
+    bool      subscribed;                         // SUBSCRIBE_EVENTS: stream detections as EVENTs
 } S;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
@@ -68,7 +72,8 @@ static void send_status_event(void) {
     uint8_t b[96];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b + 1, sizeof(b) - 1);
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 3);
+    ss_cbor_map(&w, 4);
+    ss_cbor_kv_uint(&w, "power", power_state());
     ss_cbor_kv_uint(&w, "batt_mv", mv);
     ss_cbor_kv_bool(&w, "batt_low", mv && mv <= SS_BATT_LOW_MV);
     ss_cbor_kv_uint(&w, "mode_shadow", S.valid ? S.mode : SS_MODE_SILENT_RX);
@@ -95,6 +100,7 @@ static void op_hello(uint8_t seq, const uint8_t* a, size_t n) {
     S.mode = SS_MODE_SILENT_RX;                   // every new session starts silent
     S.clk_offset = (int32_t)(t_ms - now_ms());    // lets us judge token freshness on the CYD clock
     S.low_reported = false;
+    S.subscribed = false;                         // a new session must re-subscribe
     ss_token_reset_replay_window();
 
     uint8_t b[64];
@@ -120,23 +126,57 @@ static void op_set_mode(uint8_t seq, const uint8_t* a, size_t n) {
     send_resp(seq, SS_OK, NULL, 0);
 }
 
+// SET_POWER {charge:bool}: user-selected charge mode on/off. Refused (SS_ERR_LOCKED) while the
+// low-battery forced charge mode is active; the reply always carries the resulting state.
+static void op_set_power(uint8_t seq, const uint8_t* a, size_t n) {
+    bool charge = false;
+    if (!S.valid) { send_resp(seq, SS_ERR_MODE, NULL, 0); return; }   // no session: HELLO first
+    if (!ss_cbor_get_bool(a, n, "charge", &charge)) { send_resp(seq, SS_ERR_BADFRAME, NULL, 0); return; }
+    ss_err_t e = power_request(charge);
+    uint8_t b[16];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    ss_cbor_map(&w, 1);
+    ss_cbor_kv_uint(&w, "power", power_state());
+    send_resp(seq, w.err ? SS_ERR_BUSY : (uint8_t)e, b, w.len);
+}
+
 static void op_get_status(uint8_t seq) {
     uint32_t now = now_ms();
     ss_mode_t eff = effective_mode(now);          // may latch the shadow invalid first
     uint8_t b[96];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
     uint16_t mv = battery_mv();
-    ss_cbor_map(&w, 6);
+    ss_cbor_map(&w, 8);
+    ss_cbor_kv_uint(&w, "power", power_state());
     ss_cbor_kv_uint(&w, "mode", eff);
     ss_cbor_kv_bool(&w, "valid", S.valid);
     ss_cbor_kv_uint(&w, "up_ms", now);
     ss_cbor_kv_uint(&w, "q", 0);
     ss_cbor_kv_uint(&w, "batt_mv", mv);
     ss_cbor_kv_bool(&w, "batt_low", mv && mv <= SS_BATT_LOW_MV);
+    ss_cbor_kv_uint(&w, "dets", det_count());
     send_resp(seq, w.err ? SS_ERR_BUSY : SS_OK, b, w.len);
 }
 
+// ---- real PASSIVE results ---------------------------------------------------
+static uint8_t s_big[3072];                        // scan / list reply staging (link task only)
+
+static void op_scan_wifi(uint8_t seq) {
+    ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));
+    bool ok = det_encode_aps(&w);
+    send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
+}
+
+static void op_list_detections(uint8_t seq, const uint8_t* a, size_t n) {
+    uint32_t offset = 0;
+    if (n) (void)ss_cbor_get_uint(a, n, "offset", &offset);   // optional paging argument
+    ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));
+    bool ok = det_encode_list(&w, offset);
+    send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
+}
+
 // ---- canned PASSIVE results (M2 only; replaced by real scans in M3) ----------
+static void op_scan_wifi_canned(uint8_t seq) __attribute__((unused));
 static void op_scan_wifi_canned(uint8_t seq) {
     uint8_t b[256];
     ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
@@ -184,6 +224,7 @@ void dispatch_handle(const ss_frame_t* f) {
     // Control ops: no class, no token
     if (op == SS_OP_HELLO)      { op_hello(f->seq, p, n); return; }
     if (op == SS_OP_SET_MODE)   { op_set_mode(f->seq, p, n); return; }
+    if (op == SS_OP_SET_POWER)  { op_set_power(f->seq, p, n); return; }
     if (op == SS_OP_GET_STATUS) { op_get_status(f->seq); return; }
 
     // Everything else is a registry capability and goes through the gate
@@ -202,9 +243,16 @@ void dispatch_handle(const ss_frame_t* f) {
         return;
     }
 
+    if (!power_radio_allowed() && (op == SS_OP_SCAN_WIFI || op == SS_OP_SCAN_BLE)) {
+        send_resp(f->seq, SS_ERR_BUSY, NULL, 0);   // charge mode: radio is off
+        return;
+    }
+
     switch (op) {
-    case SS_OP_SCAN_WIFI: op_scan_wifi_canned(f->seq); return;
-    case SS_OP_SCAN_BLE:  op_scan_ble_canned(f->seq);  return;
+    case SS_OP_SCAN_WIFI:        op_scan_wifi(f->seq); return;
+    case SS_OP_SCAN_BLE:         op_scan_ble_canned(f->seq); return;
+    case SS_OP_LIST_DETECTIONS:  op_list_detections(f->seq, p, n); return;
+    case SS_OP_SUBSCRIBE_EVENTS: S.subscribed = true; send_resp(f->seq, SS_OK, NULL, 0); return;
     case SS_OP_TX_SLOT_A: case SS_OP_TX_SLOT_B: case SS_OP_TX_SLOT_C: case SS_OP_TX_SLOT_D:
         send_resp(f->seq, (uint8_t)tx_slot_run((ss_opcode_t)op, p, n), NULL, 0);
         return;
@@ -217,7 +265,35 @@ void dispatch_handle(const ss_frame_t* f) {
 void dispatch_tick(void) {
     uint32_t now = now_ms();
     (void)effective_mode(now);                    // lets the shadow go stale even with no traffic
+    det_tick();                                   // prune stale detections, periodic stats line
+    static bool selftest_done = false;
+    if (!selftest_done && now > 4000) { selftest_done = true; power_selftest(); }   // after the USB console is up
+    static ss_power_t last_power = SS_POWER_NORMAL;
+    static uint32_t last_pwr_ms = 0;
+    if (now - last_pwr_ms >= 1000) {
+        last_pwr_ms = now;
+        power_tick(battery_mv());                 // forced entry at the low threshold, forced exit above 4.0 V
+    }
+    if (power_state() != last_power) {            // tell the CYD at once, not at the next heartbeat
+        last_power = power_state();
+        if (S.valid) { S.last_evt_ms = now; send_status_event(); }
+    }
     if (!S.valid) return;
+
+    // Stream queued detections to the CYD (a few per tick so the link stays responsive)
+    if (S.subscribed) {
+        for (int k = 0; k < 3; k++) {
+            uint8_t b[400];
+            ss_cbor_w_t w; ss_cbor_w_init(&w, b + 1, sizeof(b) - 1);
+            if (!det_pop_event(&w)) break;
+            b[0] = SS_EVT_DETECTION;
+            uart_slave_send(SS_T_EVENT, 0, 0, b, (uint16_t)(w.len + 1));
+        }
+    } else {
+        // Not subscribed: drain so the queue never backs up
+        uint8_t b[400]; ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+        while (det_pop_event(&w)) { w.len = 0; w.err = false; }
+    }
     uint16_t mv = battery_mv();
     bool low = mv && mv <= SS_BATT_LOW_MV;
     if ((low && !S.low_reported) || (now - S.last_evt_ms) >= 10000) {

@@ -100,7 +100,19 @@
   ~/.espressif); activate with `. $HOME\esp\esp-idf\export.ps1`.
 - CYD dev console (serial) can probe the C5 but cannot change mode or mint tokens
   (those need the M4 pop-up and M6 consent flow).
-- Next: M3 real passive radio on the C5 (scan_sched, signatures/remote_id port).
+- **M3a (2026-10-19), verified on hardware:** C5 passive dual-band Wi-Fi capture (2.4 + 5 GHz
+  hop, promiscuous, mgmt frames only, no probes), ported signature engine (109 rules, same
+  count as legacy), AP table, SCAN_WIFI / LIST_DETECTIONS / SUBSCRIBE_EVENTS with detection
+  events streamed to the CYD. The C5 flash is now 8 MB with a 1.5 MB app partition (37% free).
+- **Charge mode (user request):** C5 owns the state (NORMAL / CHARGE_USER / CHARGE_FORCED).
+  Forced at <= 3.4 V (SS_BATT_LOW_MV), held until > 4.0 V (SS_BATT_EXIT_MV), and the hold
+  applies ONLY to the forced state. Radio fully off in either charge state; CYD dims, drops to
+  80 MHz and shows only the battery voltage; new opcode SET_POWER (0x04), error SS_ERR_LOCKED.
+  Test hook: SS_BATT_TEST_SWEEP=1 in battery.h simulates a 3.3 -> 4.1 V sweep (keep it 0).
+- Not ported yet: BLE (scan + tracker logic), Remote ID decode (beacon IE is flagged but not
+  decoded, NAN skipped), scan scheduler + FOCUS_TARGET, GET_DEVICE_PROFILE, the CYD detection UI.
+- Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),
+  FOCUS_TARGET, Remote ID.
 
 ## Split architecture hardware (planned; see BUILD_MANIFEST.md / PROTOCOL.md)
 - UART link LOCKED: CYD CN1 GPIO22=TX, GPIO27=RX (Serial2) <-> XIAO C5 GPIO9=TX (D9),

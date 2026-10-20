@@ -50,6 +50,11 @@ static void line(int idx, int y, const char* text, uint16_t col, int font = 2) {
 }
 
 static bool s_first = true;
+static ss_mode_t s_pill_shown = (ss_mode_t)99;
+#define CHG_BTN_X 214
+#define CHG_BTN_Y 28
+#define CHG_BTN_W 100
+#define CHG_BTN_H 30
 
 void status_ui_draw(const StatusView& v, ss_mode_t mode) {
     if (s_first) {
@@ -64,14 +69,16 @@ void status_ui_draw(const StatusView& v, ss_mode_t mode) {
     char b[64];
 
     // Mode pill (drawn from the single authoritative mode value)
-    static ss_mode_t shown = (ss_mode_t)99;
-    if (mode != shown) {
-        shown = mode;
+    if (mode != s_pill_shown) {
+        s_pill_shown = mode;
         uint16_t pc = (mode == SS_MODE_SILENT_RX) ? C_OK : C_WARN;
         tft.fillRoundRect(6, 28, 200, 30, 15, pc);
         tft.setTextColor(TFT_BLACK, pc);
         tft.setTextDatum(MC_DATUM);
         tft.drawString(mode_name(mode), 106, 44, 4);
+        tft.fillRoundRect(CHG_BTN_X, CHG_BTN_Y, CHG_BTN_W, CHG_BTN_H, 8, C_DIM);
+        tft.setTextColor(TFT_BLACK, C_DIM);
+        tft.drawString("CHARGE", CHG_BTN_X + CHG_BTN_W / 2, CHG_BTN_Y + CHG_BTN_H / 2, 2);
     }
 
     const C5Status& c = *v.c5;
@@ -105,4 +112,55 @@ void status_ui_draw(const StatusView& v, ss_mode_t mode) {
     line(6, 186, b, v.selftest_pass == v.selftest_total ? C_OK : C_BAD);
 
     line(7, 208, v.last[0] ? v.last : "last: -", C_ACCENT, 2);
+}
+
+bool status_ui_charge_button_hit(int x, int y) {
+    return x >= CHG_BTN_X && x < CHG_BTN_X + CHG_BTN_W && y >= CHG_BTN_Y && y < CHG_BTN_Y + CHG_BTN_H;
+}
+
+// ---- charge mode screen ---------------------------------------------------------
+// Everything except the battery voltage is switched off: backlight dimmed, CPU slowed to
+// 80 MHz (the lowest speed that keeps the APB clock, and so the UART baud rate, intact),
+// and the screen redraws only when a value changes.
+static char s_chg_last[3][40];
+static uint16_t s_chg_col[3];
+
+static void chg_text(int idx, int y, const char* text, uint16_t col, int font) {
+    if (strncmp(s_chg_last[idx], text, sizeof(s_chg_last[idx])) == 0 && s_chg_col[idx] == col) return;
+    strncpy(s_chg_last[idx], text, sizeof(s_chg_last[idx]) - 1);
+    s_chg_last[idx][sizeof(s_chg_last[idx]) - 1] = 0;
+    s_chg_col[idx] = col;
+    tft.fillRect(0, y - (font == 7 ? 8 : 4), SCREEN_W, font == 7 ? 62 : 26, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(col, C_BG);
+    tft.drawString(text, SCREEN_W / 2, y + (font == 7 ? 24 : 10), font);
+}
+
+void status_ui_set_charge(bool on) {
+    memset(s_chg_last, 0, sizeof(s_chg_last));
+    memset(s_chg_col, 0, sizeof(s_chg_col));
+    tft.fillScreen(C_BG);
+    if (on) {
+        ledcWrite(0, 25);                 // backlight to about 10%
+        setCpuFrequencyMhz(80);
+    } else {
+        ledcWrite(0, 200);
+        setCpuFrequencyMhz(240);
+        s_first = true;                   // normal screen repaints from scratch
+        s_pill_shown = (ss_mode_t)99;
+        memset(L, 0, sizeof(L));
+    }
+}
+
+void status_ui_draw_charge(const C5Status& c) {
+    bool forced = (c.power == SS_POWER_CHARGE_FORCED);
+    chg_text(0, 20, forced ? "LOW BATTERY - CHARGE REQUIRED" : "CHARGE MODE", forced ? C_BAD : C_ACCENT, 2);
+    char b[16];
+    if (c.link_up && c.batt_mv) {
+        snprintf(b, sizeof(b), "%u.%02u", c.batt_mv / 1000, (c.batt_mv % 1000) / 10);
+        chg_text(1, 70, b, forced ? C_WARN : C_OK, 7);
+    } else {
+        chg_text(1, 70, c.link_up ? "n/a" : "no link", C_DIM, 4);
+    }
+    chg_text(2, 190, forced ? "locked until over 4.00 V" : "tap anywhere to exit", C_DIM, 2);
 }

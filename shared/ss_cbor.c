@@ -119,8 +119,8 @@ static bool fill_val(const uint8_t** pp, const uint8_t* end, ss_cbor_val_t* v) {
         if (arg > (uint64_t)(end - p)) return false;
         v->type = (major == 2) ? SS_CBOR_BYTES : SS_CBOR_TEXT;
         v->ptr = p; v->n = (size_t)arg; p += v->n; break;
-    case 4: v->type = SS_CBOR_ARRAY; v->n = (size_t)arg; break;   // items follow
-    case 5: v->type = SS_CBOR_MAP;   v->n = (size_t)arg; break;
+    case 4: v->type = SS_CBOR_ARRAY; v->n = (size_t)arg; v->ptr = p; break;   // items follow at ptr
+    case 5: v->type = SS_CBOR_MAP;   v->n = (size_t)arg; v->ptr = p; break;
     case 7:
         if (ib == 0xF4 || ib == 0xF5) { v->type = SS_CBOR_BOOL; v->u = (ib == 0xF5); }
         else if (ib == 0xF6)          { v->type = SS_CBOR_NULL; }
@@ -131,6 +131,8 @@ static bool fill_val(const uint8_t** pp, const uint8_t* end, ss_cbor_val_t* v) {
     *pp = p;
     return true;
 }
+
+bool ss_cbor_skip(const uint8_t** pp, const uint8_t* end) { return skip_item(pp, end, 0); }
 
 bool ss_cbor_map_get(const uint8_t* buf, size_t len, const char* key, ss_cbor_val_t* out) {
     const uint8_t* p = buf;
