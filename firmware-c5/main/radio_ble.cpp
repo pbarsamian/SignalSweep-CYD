@@ -232,7 +232,7 @@ static void capture_fields(const Adv& a, Detection& d) {
 }
 
 // ---- BLE device table (feeds SCAN_BLE) ------------------------------------------------------------------------
-#define MAX_BLE 32
+#define MAX_BLE 64                                   // distinct devices tracked (stalest evicted beyond this)
 struct BleRec { uint8_t mac[6]; char name[24]; uint16_t company; bool has_company; uint8_t addr_type; int8_t rssi; uint32_t last_ms; bool used; };
 static BleRec s_devs[MAX_BLE];
 static portMUX_TYPE s_dev_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -271,10 +271,11 @@ bool radio_ble_encode_devs(ss_cbor_w_t* w) {
         while (j >= 0 && snap[order[j]].last_ms < snap[k].last_ms) { order[j + 1] = order[j]; j--; }
         order[j + 1] = k;
     }
-    if (n > 20) n = 20;
+    int total = n;                                                   // everything heard in the last minute
+    if (n > 20) n = 20;                                              // but only the 20 freshest travel in one frame
     ss_cbor_map(w, 3);
     ss_cbor_kv_bool(w, "canned", false);
-    ss_cbor_kv_uint(w, "total", n);
+    ss_cbor_kv_uint(w, "total", total);
     ss_cbor_text(w, "devs");
     ss_cbor_array(w, n);
     for (int i = 0; i < n; i++) {
