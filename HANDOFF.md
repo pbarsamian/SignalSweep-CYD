@@ -141,10 +141,11 @@
 - C5 flash layout: custom partitions.csv, 3 MB factory app (the BT stack made the image 1.4 MB).
 - Passive-scan limit: a device whose name is only in a scan response is never named, so the name rules
   (flock, flipper, penguin-NNNNNNNNNN) can miss it. Active scanning would be an ACTIVE op behind consent.
-- No BLE positive test has been run yet (no matching hardware nearby): a phone running nRF Connect that
-  advertises service UUID 0xFEED should list as "Tile Tracker" (weight 70, alerts).
-- Not ported yet: BLE (scan + tracker logic), Remote ID decode (beacon IE is flagged but not
-  decoded, NAN skipped), scan scheduler + FOCUS_TARGET, GET_DEVICE_PROFILE, the CYD detection UI.
+- BLE positive detection verified with real devices (issue #6): the C5 logged `NEW BLE 'Apple Find My Tracker'
+  conf=80 ... ALERT` and the same alerts reached the CYD as events. The nRF Connect 0xFEED (Tile) test has not been run.
+- Header shows `BLE n` (devices heard in the last 60 s; dim `BLE -` until the first reply or when stale), fed by a
+  5 s background SCAN_BLE poll on every tab except the BLE view (issue #7).
+- Not built yet: scan scheduler, FOCUS_TARGET handler (opcode 0x15 is registry-only), M4/M6 consent flow.
 - Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),
   FOCUS_TARGET, Remote ID.
 

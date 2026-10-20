@@ -499,7 +499,7 @@ void loop() {
     }
 
     // Poll the C5 for what the screens show (events already push new detections as they happen)
-    static uint32_t next_list_ms = 0, next_aps_ms = 0;
+    static uint32_t next_list_ms = 0, next_aps_ms = 0, next_ble_bg_ms = 0;
     if (c5.link_up && !s_charge_ui && c5.power == SS_POWER_NORMAL) {
         if ((int32_t)(now - next_list_ms) >= 0 && !g_link.busy()) { next_list_ms = now + 2000; send_list(0); }
         if (ui_wants_aps() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_WIFI); }
@@ -507,6 +507,8 @@ void loop() {
         static uint32_t next_prof_ms = 0;
         if (ui_wants_profile(pmac) && (int32_t)(now - next_prof_ms) >= 0 && !g_link.busy()) { next_prof_ms = now + 2000; send_profile(pmac); }
         if (ui_wants_ble() && (int32_t)(now - next_aps_ms) >= 0 && !g_link.busy()) { next_aps_ms = now + 2500; send_simple(SS_OP_SCAN_BLE); }
+        // Slow background poll on every other screen keeps the header's BLE count current
+        else if (!ui_wants_ble() && (int32_t)(now - next_ble_bg_ms) >= 0 && !g_link.busy()) { next_ble_bg_ms = now + 5000; send_simple(SS_OP_SCAN_BLE); }
     }
 
     if (!s_charge_ui) {

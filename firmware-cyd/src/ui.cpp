@@ -129,7 +129,9 @@ static void draw_header(const UiCtx& c) {
     uint16_t bat = c.c5->link_up ? c.c5->batt_mv : 0;
     static char last[48] = {};
     char key[48];
-    snprintf(key, sizeof(key), "%d|%u|%d|%d|%d", c.c5->link_up, bat, (int)c.mode, alerts, c.c5->batt_low);
+    bool ble_fresh = g_model.ble_ms && (millis() - g_model.ble_ms) < 15000;
+    int ble_n = ble_fresh ? (int)g_model.ble_total : -1;
+    snprintf(key, sizeof(key), "%d|%u|%d|%d|%d|%d", c.c5->link_up, bat, (int)c.mode, alerts, c.c5->batt_low, ble_n);
     if (!s_hdr_dirty && strcmp(key, last) == 0) return;
     strncpy(last, key, sizeof(last) - 1);
     s_hdr_dirty = false;
@@ -160,6 +162,13 @@ static void draw_header(const UiCtx& c) {
         tft.setTextColor(C_MDGREY, C_BLACK);
         tft.drawString(c.c5->link_up ? "n/a" : "no C5", 158, HDR_H / 2, 1);
     }
+
+    // BLE devices heard recently (dim until the first reply, or if it goes stale)
+    char bb[12];
+    if (ble_n >= 0) snprintf(bb, sizeof(bb), "BLE %d", ble_n); else snprintf(bb, sizeof(bb), "BLE -");
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(ble_n > 0 ? C_ACCENT : C_MDGREY, C_BLACK);
+    tft.drawString(bb, 204, HDR_H / 2, 1);
 
     // Alert badge
     char buf[16];
