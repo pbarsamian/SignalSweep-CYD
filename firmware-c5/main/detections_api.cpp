@@ -6,6 +6,9 @@
 #include "radio_ble.h"
 #include <strings.h>
 #include "signatures.h"
+#include "focus.h"
+#include "ss_protocol.h"
+#include <stdio.h>
 
 #define LIST_PAGE 10                 // entries per LIST_DETECTIONS reply (keeps it well under one frame)
 
@@ -45,7 +48,193 @@ void det_api_start(bool radio_on) {
     radio_ble_start(radio_on);
 }
 
-void det_radio_enable(bool on) { radio_wifi_set_enabled(on); radio_ble_set_enabled(on); }
+void det_focus_stop(const char* why) {
+    if (!focus_active()) return;
+    focus_stop(why);
+    radio_wifi_set_data_filter(false);
+    radio_ble_set_focus(false);
+}
+
+void det_radio_enable(bool on) {
+    if (!on) det_focus_stop("radio off");
+    radio_wifi_set_enabled(on);
+    radio_ble_set_enabled(on);
+}
+
+static bool parse_mac(const char* s, uint8_t out[6]) {
+    unsigned v[6];
+    char tail;
+    if (sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x%c", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &tail) != 6) return false;
+    for (int i = 0; i < 6; i++) out[i] = (uint8_t)v[i];
+    return true;
+}
+
+static void focus_reply(ss_cbor_w_t* w) {
+    ss_cbor_map(w, 3);
+    ss_cbor_kv_bool(w, "focus", true);
+    ss_cbor_kv_text(w, "radio", focus_is_wifi() ? "wifi" : "ble");
+    ss_cbor_kv_uint(w, "ch", focus_channel());
+}
+
+int det_focus_request(const uint8_t* a, size_t n, ss_cbor_w_t* w) {
+    bool on = true;
+    (void)ss_cbor_get_bool(a, n, "on", &on);
+    if (!on) {
+        det_focus_stop("released");
+        ss_cbor_map(w, 1);
+        ss_cbor_kv_bool(w, "focus", false);
+        return SS_OK;
+    }
+
+    ss_cbor_val_t m;
+    char mac_text[24];
+    uint8_t mac[6];
+    if (!ss_cbor_map_get(a, n, "mac", &m) || m.type != SS_CBOR_TEXT || m.n == 0 || m.n >= sizeof(mac_text)) return SS_ERR_BADFRAME;
+    memcpy(mac_text, m.ptr, m.n);
+    mac_text[m.n] = 0;
+    if (!parse_mac(mac_text, mac)) return SS_ERR_BADFRAME;
+
+    // A repeat request for the target we already hold is just a lease refresh.
+    if (focus_matches(mac)) {
+        focus_refresh();
+        focus_reply(w);
+        return SS_OK;
+    }
+
+    // What does the registry know about it? If nothing (a pivot to a peer), the request must say.
+    bool known = false, wifi = false;
+    uint32_t ch = 0;
+    if (xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return SS_ERR_BUSY;
+    for (int i = 0; i < g_reg.count; i++) {
+        const Detection& e = g_reg.items[i];
+        if (memcmp(e.mac, mac, 6) != 0) continue;
+        known = true;
+        wifi = (e.proto & PROTO_WIFI) != 0;
+        ch = (uint32_t)e.channel;
+        break;
+    }
+    xSemaphoreGive(g_reg_mutex);
+
+    ss_cbor_val_t rv;
+    if (ss_cbor_map_get(a, n, "radio", &rv) && rv.type == SS_CBOR_TEXT) {       // an explicit radio wins
+        if (rv.n == 4 && memcmp(rv.ptr, "wifi", 4) == 0) wifi = true;
+        else if (rv.n == 3 && memcmp(rv.ptr, "ble", 3) == 0) wifi = false;
+        else return SS_ERR_BADFRAME;
+    } else if (!known) {
+        return SS_ERR_BADFRAME;
+    }
+    uint32_t reqch = 0;
+    if (ss_cbor_get_uint(a, n, "ch", &reqch) && reqch) ch = reqch;
+    if (wifi && (ch < 1 || ch > 165)) return SS_ERR_BADFRAME;                  // need a channel to park on
+
+    if (!known) {                                                              // pivot: list it as a low-confidence peer
+        Detection d;
+        d.type = ThreatType::UNKNOWN;
+        snprintf(d.name, sizeof(d.name), "%s", "Peer (pivot)");
+        memcpy(d.mac, mac, 6);
+        d.proto = wifi ? PROTO_WIFI : PROTO_BLE;
+        d.addr_type = wifi ? ((mac[0] & 0x02) ? ADDR_WIFI_LOCAL : ADDR_WIFI_UNIVERSAL) : ADDR_UNKNOWN;
+        d.channel = wifi ? (int)ch : 0;
+        d.band = wifi ? (ch >= 36 ? 5 : 2) : 0;
+        d.timestamp_ms = ms_now();
+        if (xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(20)) != pdTRUE) return SS_ERR_BUSY;
+        int idx = g_reg.upsert(d);
+        xSemaphoreGive(g_reg_mutex);
+        if (idx < 0) ESP_LOGW("focus", "registry full: focusing without a list entry");   // focus does not need one
+    }
+
+    det_focus_stop("retarget");
+    focus_start(mac, wifi, (uint8_t)ch);
+    if (wifi) radio_wifi_set_data_filter(true);
+    else radio_ble_set_focus(true);
+    focus_reply(w);
+    return SS_OK;
+}
+
+// RSSI_TICK body for the HUNT view: a few per second while focused.
+bool det_pop_focus_event(ss_cbor_w_t* w) {
+    static uint32_t last = 0;
+    uint32_t now = ms_now();
+    if (!focus_active() || now - last < 200) return false;
+    static FocusState f;
+    if (!focus_snapshot(&f)) return false;
+    last = now;
+    char mac[20];
+    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", f.mac[0], f.mac[1], f.mac[2], f.mac[3], f.mac[4], f.mac[5]);
+    ss_cbor_map(w, 4);
+    ss_cbor_kv_text(w, "mac", mac);
+    ss_cbor_kv_int(w, "rssi", f.last_rssi);
+    ss_cbor_kv_uint(w, "age_ms", f.last_tx_ms ? now - f.last_tx_ms : 99999);
+    ss_cbor_kv_uint(w, "n", f.wifi ? f.frames : f.adv_count);
+    return !w->err;
+}
+
+// GET_DEVICE_PROFILE view "focus": what the parked radio has collected about the target.
+bool det_encode_focus(ss_cbor_w_t* w) {
+    static FocusState f;                             // link task only; keep off the stack
+    if (!focus_snapshot(&f)) return false;
+    uint32_t now = ms_now();
+    char mac[20];
+    snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X", f.mac[0], f.mac[1], f.mac[2], f.mac[3], f.mac[4], f.mac[5]);
+
+    size_t pairs = 7;                                // mac radio ch up_ms age_ms rssi n
+    if (f.wifi) pairs += 7;                          // beacons presp preq omgmt data iemap peers (ht, vie below)
+    else pairs += 2;                                 // advs, adv_int
+    if (f.wifi && f.ht_streams) pairs++;
+    if (f.wifi && f.vie_count) pairs++;
+    if (!f.wifi && f.raw_len) pairs++;
+    ss_cbor_map(w, pairs);
+    ss_cbor_kv_text(w, "mac", mac);
+    ss_cbor_kv_text(w, "radio", f.wifi ? "wifi" : "ble");
+    ss_cbor_kv_uint(w, "ch", f.channel);
+    ss_cbor_kv_uint(w, "up_ms", now - f.started_ms);
+    ss_cbor_kv_uint(w, "age_ms", f.last_tx_ms ? now - f.last_tx_ms : 99999);
+    ss_cbor_kv_int(w, "rssi", f.last_rssi);
+    ss_cbor_kv_uint(w, "n", f.wifi ? f.frames : f.adv_count);
+    if (f.wifi) {
+        ss_cbor_kv_uint(w, "beacons", f.beacons);
+        ss_cbor_kv_uint(w, "presp", f.probe_resps);
+        ss_cbor_kv_uint(w, "preq", f.probe_reqs);
+        ss_cbor_kv_uint(w, "omgmt", f.other_mgmt);
+        ss_cbor_kv_uint(w, "data", f.data_frames);
+        ss_cbor_kv_bytes(w, "iemap", f.ie_map, sizeof(f.ie_map));
+        if (f.ht_streams) ss_cbor_kv_uint(w, "ht", f.ht_streams);
+        if (f.vie_count) ss_cbor_kv_bytes(w, "vie", &f.vie[0][0], (size_t)f.vie_count * 4);
+        // peers, busiest first
+        uint8_t order[FOCUS_MAX_PEERS];
+        int np = f.peer_count;
+        for (int i = 0; i < np; i++) order[i] = (uint8_t)i;
+        for (int i = 1; i < np; i++) {
+            uint8_t k = order[i];
+            int j = i - 1;
+            auto tot = [&](uint8_t x) { return f.peers[x].to_frames + f.peers[x].from_frames; };
+            while (j >= 0 && tot(order[j]) < tot(k)) { order[j + 1] = order[j]; j--; }
+            order[j + 1] = k;
+        }
+        ss_cbor_text(w, "peers");
+        ss_cbor_array(w, (size_t)np);
+        for (int i = 0; i < np; i++) {
+            const FocusPeer& p = f.peers[order[i]];
+            char pm[20];
+            snprintf(pm, sizeof(pm), "%02X:%02X:%02X:%02X:%02X:%02X", p.mac[0], p.mac[1], p.mac[2], p.mac[3], p.mac[4], p.mac[5]);
+            ss_cbor_map(w, 9);
+            ss_cbor_kv_text(w, "mac", pm);
+            ss_cbor_kv_uint(w, "role", p.role);
+            ss_cbor_kv_int(w, "rssi", p.rssi);
+            ss_cbor_kv_uint(w, "tof", p.to_frames);
+            ss_cbor_kv_uint(w, "frf", p.from_frames);
+            ss_cbor_kv_uint(w, "tob", p.to_bytes);
+            ss_cbor_kv_uint(w, "frb", p.from_bytes);
+            ss_cbor_kv_uint(w, "qos", p.qos_frames);
+            ss_cbor_kv_uint(w, "age_ms", now - p.last_ms);
+        }
+    } else {
+        ss_cbor_kv_uint(w, "advs", f.adv_count);
+        ss_cbor_kv_uint(w, "adv_int", f.adv_int_min);
+        if (f.raw_len) ss_cbor_kv_bytes(w, "raw", f.raw, f.raw_len);
+    }
+    return !w->err;
+}
 
 void det_set_config(int drone, int tracker, int camera, int bodycam, int attack) {
     if (drone   >= 0) g_cfg.detect_drone   = drone;
@@ -204,8 +393,22 @@ bool det_encode_profile(const char* mac_text, ss_cbor_w_t* w) {
 }
 
 void det_tick(void) {
-    static uint32_t last_prune = 0, last_log = 0;
+    static uint32_t last_prune = 0, last_log = 0, last_sync = 0;
     uint32_t now = ms_now();
+    if (focus_active() && focus_expired(now)) det_focus_stop("lease lapsed");   // the CYD stopped refreshing it
+    if (focus_active() && now - last_sync >= 500) {                            // keep the focused entry live (pivoted peers never re-match a rule)
+        last_sync = now;
+        static FocusState f;
+        if (focus_snapshot(&f) && f.last_tx_ms && xSemaphoreTake(g_reg_mutex, pdMS_TO_TICKS(5)) == pdTRUE) {
+            for (int i = 0; i < g_reg.count; i++)
+                if (memcmp(g_reg.items[i].mac, f.mac, 6) == 0) {
+                    g_reg.items[i].rssi = f.last_rssi;
+                    g_reg.items[i].timestamp_ms = f.last_tx_ms;
+                    break;
+                }
+            xSemaphoreGive(g_reg_mutex);
+        }
+    }
     if (now - last_prune >= 1000) { last_prune = now; registry_prune(); }
     // Stats line: every 5 s while scanning, every 60 s in charge mode (fewer wake-ups)
     uint32_t log_every = radio_wifi_enabled() ? 5000 : 60000;

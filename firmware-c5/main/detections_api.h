@@ -21,6 +21,12 @@ bool     det_encode_ble(ss_cbor_w_t* w);             // SCAN_BLE result (seen BL
 bool     det_pop_event(ss_cbor_w_t* w);              // next pending detection event, if any
 // GET_DEVICE_PROFILE: everything the C5 knows about one detection (by MAC text). False if unknown.
 bool     det_encode_profile(const char* mac_text, ss_cbor_w_t* w);
+// FOCUS_TARGET {on:bool, mac:text, radio:"wifi"|"ble", ch:uint}: park on one target (or release).
+// Returns an SS_ err code; on success the CBOR reply describes the focus.
+int      det_focus_request(const uint8_t* args, size_t n, ss_cbor_w_t* w);
+void     det_focus_stop(const char* why);            // end any focus and restore the sweep
+bool     det_encode_focus(ss_cbor_w_t* w);           // GET_DEVICE_PROFILE view "focus"; false if not focused
+bool     det_pop_focus_event(ss_cbor_w_t* w);        // next RSSI_TICK body (rate-limited), if focused
 uint32_t det_count(void);
 void     det_tick(void);                             // housekeeping: prune stale, log stats
 

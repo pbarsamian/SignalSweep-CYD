@@ -16,3 +16,4 @@ bool     radio_ble_enabled(void);
 // Recently seen BLE devices (every advert, matched or not), freshest first.
 bool     radio_ble_encode_devs(ss_cbor_w_t* w);
 void     radio_ble_log_stats(void);
+void     radio_ble_set_focus(bool on);           // focus: scan at full duty (window = interval)

@@ -109,7 +109,7 @@ A RESP payload is `[STATUS u8][ CBOR map of result ]`.
 | 0x12 | `LIST_DETECTIONS` | PASSIVE | current detection table |
 | 0x13 | `GET_DEVICE_PROFILE` | PASSIVE | OUI/company, addr-type, WPS, Continuity, IEs |
 | 0x14 | `REMOTE_ID_DECODE` | PASSIVE | ASTM F3411 BLE / beacon / NAN |
-| 0x15 | `FOCUS_TARGET` | PASSIVE | lock channel / full-time BLE listen on one target |
+| 0x15 | `FOCUS_TARGET` | PASSIVE | lock channel / full-time BLE listen on one target; a lease, see §3b-3 |
 | 0x16 | `SUBSCRIBE_EVENTS` | PASSIVE | stream detections/RSSI as EVENTs |
 | 0x30 | `GATT_CONNECT_READ` | ACTIVE_CONNECT | initiates a connection → detectable |
 | 0x31 | `DEVICE_INFO_READ` | ACTIVE_CONNECT | BLE DIS read |
@@ -176,7 +176,45 @@ optional `{offset:u}` and returns `{total, offset, items:[detection]}` (10 per p
 rssi, ch, band, radio("wifi"|"ble"|"both"), age_ms, seen, ssid?}`. `SUBSCRIBE_EVENTS` turns on
 `SS_EVT_DETECTION` events: the same map plus `new:bool, alert:bool`, sent when a detection is
 first listed or first reaches the alert threshold. A new HELLO clears the subscription.
-`SCAN_BLE` is still canned until the BLE radio lands.
+`SCAN_BLE` result: `{canned:false, total:n, devs:[{mac, name, rssi, atype, age_ms, company?}]}`: devices heard in the last 60 s,
+the 20 freshest, and `total` is the real count (the C5 tracks up to 64).
+
+### 3b-3. Focus mode (`FOCUS_TARGET` 0x15, PASSIVE)
+
+Focus parks the C5 on one target instead of sweeping. It is passive: Wi-Fi locks the target's
+channel and also receives **data-frame headers** (addresses, sizes and QoS flag only; payloads are
+never read or stored); BLE scans at full duty (window = interval, still a passive scan, no scan
+requests). Nothing transmits. The class is PASSIVE, so it needs no token, but it is refused in
+charge mode (radio off) like the scans.
+
+Request `{on:bool, mac:text, radio:"wifi"|"ble", ch:uint}`. `on` defaults to true. `radio` and `ch`
+are optional when the MAC is already in the C5's detection list (its own radio and channel are used)
+and required for a **pivot**, a MAC the C5 has never matched (a peer). A pivoted MAC is listed as a
+low-confidence `Peer (pivot)` entry if there is room; if the list is full, focus proceeds without an
+entry. Wi-Fi needs `ch` 1..165, else `SS_ERR_BADFRAME`. Reply `{focus:bool, radio, ch}`. Asking for
+the target already held just renews the lease. `{on:false}` releases (the other keys are ignored).
+
+**Focus is a lease.** The CYD renews it (the same request) about every 5 s while INFO shows the
+target. The C5 ends it by itself after `FOCUS_TTL_MS` (15 s) without a renewal, on a new HELLO, when
+the mode shadow goes stale (link lost), and when the radio is switched off for charge mode. Ending
+focus restores the mgmt-only filter, the channel hop and the normal BLE scan duty.
+
+**Focus view**: `GET_DEVICE_PROFILE {view:"focus"}` returns what the parked radio collected, or
+`SS_ERR_BUSY` if nothing is focused (the CYD then re-engages).
+
+| key | meaning |
+|-----|---------|
+| `mac`, `radio`, `ch`, `up_ms`, `age_ms`, `rssi`, `n` | target, how long focused, ms since it was last heard, last RSSI, frames (Wi-Fi) or adverts (BLE) |
+| Wi-Fi: `beacons`, `presp`, `preq`, `omgmt`, `data` | frame counts by kind (`data` counts data frames to or from the target) |
+| Wi-Fi: `iemap` (32 B), `ht`, `vie` (n x 4 B) | element-ID bitmap, spatial streams, vendor-IE OUI + type |
+| Wi-Fi: `peers` | up to 12, busiest first: `{mac, role(0 unknown,1 client of target,2 AP of target), rssi, tof, frf, tob, frb, qos, age_ms}` |
+| BLE: `advs`, `adv_int`, `raw` | adverts heard, smallest gap in ms, latest advert payload (<= 62 B) |
+
+`SS_EVT_RSSI_TICK` (needs `SUBSCRIBE_EVENTS`), about 5 per second while focused: `{mac, rssi, age_ms,
+n}`; `age_ms` 99999 means the target has not been heard yet. The CYD's HUNT page runs on these.
+
+Limits: BLE connections hop channels and are not visible, so a BLE target has no peers. The
+"Correlated" tier of LINKS (co-travel over time) needs session history on SD and is not built.
 
 ### 3c. Charge mode (power state)
 

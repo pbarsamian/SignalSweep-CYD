@@ -84,7 +84,7 @@ uint16_t model_ingest_list(const uint8_t* cb, size_t n) {
 
     // Sweep complete: drop entries the C5 no longer lists
     for (int i = 0; i < g_model.ndets; ) {
-        if (g_model.dets[i].sweep != g_model.sweep) {
+        if (g_model.dets[i].sweep != g_model.sweep && strcmp(g_model.dets[i].mac, g_focus_keep) != 0) {   // a focused peer may not be in the C5's list
             for (int j = i; j < g_model.ndets - 1; j++) g_model.dets[j] = g_model.dets[j + 1];
             g_model.ndets--;
             g_model.dets[g_model.ndets] = Det();
@@ -156,6 +156,121 @@ void model_ingest_ble(const uint8_t* cb, size_t n) {
     g_model.nble = cnt;
     g_model.ble_total = (uint16_t)total;
     g_model.ble_ms = now;
+}
+
+FocusView g_fv;
+HuntTick g_hunt;
+char g_focus_keep[18] = {};
+
+void model_focus_clear() {
+    g_fv = FocusView();
+    g_hunt = HuntTick();
+}
+
+static uint32_t get_u32(const uint8_t* cb, size_t n, const char* key) {
+    ss_cbor_val_t v;
+    return (ss_cbor_map_get(cb, n, key, &v) && v.type == SS_CBOR_UINT) ? (uint32_t)v.u : 0;
+}
+
+bool model_ingest_focus(const uint8_t* cb, size_t n) {
+    ss_cbor_val_t v;
+    if (!ss_cbor_map_get(cb, n, "mac", &v) || v.type != SS_CBOR_TEXT) return false;
+    FocusView& f = g_fv;
+    f = FocusView();
+    f.have = true;
+    copy_text(f.mac, sizeof(f.mac), v);
+    f.wifi = ss_cbor_map_get(cb, n, "radio", &v) && v.type == SS_CBOR_TEXT && v.n == 4;
+    f.ch = (uint8_t)get_u32(cb, n, "ch");
+    f.got_ms = millis();
+    f.up_ms = get_u32(cb, n, "up_ms");
+    f.age_ms = get_u32(cb, n, "age_ms");
+    if (ss_cbor_map_get(cb, n, "rssi", &v)) f.rssi = (int8_t)v.i;
+    f.n = get_u32(cb, n, "n");
+    f.beacons = get_u32(cb, n, "beacons");
+    f.presp = get_u32(cb, n, "presp");
+    f.preq = get_u32(cb, n, "preq");
+    f.omgmt = get_u32(cb, n, "omgmt");
+    f.data = get_u32(cb, n, "data");
+    f.advs = get_u32(cb, n, "advs");
+    f.adv_int = get_u32(cb, n, "adv_int");
+    f.ht = (uint8_t)get_u32(cb, n, "ht");
+    if (ss_cbor_map_get(cb, n, "iemap", &v) && v.type == SS_CBOR_BYTES && v.n == sizeof(f.iemap)) {
+        memcpy(f.iemap, v.ptr, v.n);
+        f.has_iemap = true;
+    }
+    if (ss_cbor_map_get(cb, n, "vie", &v) && v.type == SS_CBOR_BYTES) {
+        f.nvie = (uint8_t)(v.n / 4 > 8 ? 8 : v.n / 4);
+        memcpy(f.vie, v.ptr, (size_t)f.nvie * 4);
+    }
+    if (ss_cbor_map_get(cb, n, "raw", &v) && v.type == SS_CBOR_BYTES) {
+        f.raw_len = (uint8_t)(v.n > sizeof(f.raw) ? sizeof(f.raw) : v.n);
+        memcpy(f.raw, v.ptr, f.raw_len);
+    }
+    ss_cbor_val_t arr;
+    if (ss_cbor_map_get(cb, n, "peers", &arr) && arr.type == SS_CBOR_ARRAY) {
+        const uint8_t* p = arr.ptr;
+        const uint8_t* end = cb + n;
+        for (size_t i = 0; i < arr.n && f.npeers < FV_MAX_PEERS; i++) {
+            const uint8_t* item = p;
+            size_t il = end - item;
+            ss_cbor_val_t pm;
+            if (ss_cbor_map_get(item, il, "mac", &pm) && pm.type == SS_CBOR_TEXT) {
+                FvPeer& q = f.peers[f.npeers++];
+                copy_text(q.mac, sizeof(q.mac), pm);
+                q.role = (uint8_t)get_u32(item, il, "role");
+                ss_cbor_val_t r;
+                if (ss_cbor_map_get(item, il, "rssi", &r)) q.rssi = (int8_t)r.i;
+                q.tof = get_u32(item, il, "tof");
+                q.frf = get_u32(item, il, "frf");
+                q.tob = get_u32(item, il, "tob");
+                q.frb = get_u32(item, il, "frb");
+                q.qos = get_u32(item, il, "qos");
+                q.age_ms = get_u32(item, il, "age_ms");
+            }
+            if (!ss_cbor_skip(&p, end)) break;
+        }
+    }
+    return true;
+}
+
+void model_ingest_tick(const uint8_t* cb, size_t n) {
+    ss_cbor_val_t m, r;
+    if (!ss_cbor_map_get(cb, n, "mac", &m) || m.type != SS_CBOR_TEXT) return;
+    copy_text(g_hunt.mac, sizeof(g_hunt.mac), m);
+    if (ss_cbor_map_get(cb, n, "rssi", &r)) g_hunt.rssi = (int8_t)r.i;
+    uint32_t age = get_u32(cb, n, "age_ms");
+    g_hunt.ever = age < 60000;
+    g_hunt.heard_ms = millis() - age;
+    Det* d = model_find(g_hunt.mac);                      // keep the focused entry's RSSI live (a pivoted peer is never re-listed)
+    if (d && g_hunt.ever) { d->rssi = g_hunt.rssi; d->last_ms = g_hunt.heard_ms; }
+}
+
+Det* model_add_peer(const char* mac, uint8_t radio, uint8_t ch, int rssi) {
+    Det* d = model_find(mac);
+    if (d) return d;
+    if (g_model.ndets >= MODEL_MAX_DETS) {                // full: drop an older placeholder (never the focused one)
+        for (int i = 0; i < g_model.ndets; i++) {
+            if (g_model.dets[i].type != 5 || strcmp(g_model.dets[i].mac, g_focus_keep) == 0) continue;
+            for (int j = i; j < g_model.ndets - 1; j++) g_model.dets[j] = g_model.dets[j + 1];
+            g_model.ndets--;
+            g_model.dets[g_model.ndets] = Det();
+            break;
+        }
+        if (g_model.ndets >= MODEL_MAX_DETS) return nullptr;
+    }
+    d = &g_model.dets[g_model.ndets++];
+    *d = Det();
+    d->used = true;
+    strncpy(d->mac, mac, sizeof(d->mac) - 1);
+    strncpy(d->name, "Peer (pivot)", sizeof(d->name) - 1);
+    d->type = 5;
+    d->radio = radio;
+    d->ch = ch;
+    d->band = radio == 1 ? 0 : (ch >= 36 ? 5 : 2);
+    d->rssi = (int8_t)rssi;
+    d->first_ms = d->last_ms = millis();
+    d->sweep = g_model.sweep;
+    return d;
 }
 
 bool model_ingest_profile(const uint8_t* cb, size_t n) {
@@ -251,4 +366,5 @@ void model_clear() {
     g_model.ble_total = 0; g_model.ble_ms = 0;
     g_model.aps_ms = g_model.list_ms = 0;
     g_model.list_total = 0;
+    model_focus_clear();
 }

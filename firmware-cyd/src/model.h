@@ -5,7 +5,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define MODEL_MAX_DETS 32
+#define MODEL_MAX_DETS 40                // the C5 lists at most 32; the rest is room for pivoted peers / tapped APs
 #define MODEL_MAX_APS  24
 #define MODEL_MAX_BLE  16
 
@@ -98,6 +98,54 @@ struct Profile {
 };
 extern Profile g_profile;
 bool model_ingest_profile(const uint8_t* cbor, size_t n);
+
+// Focus view: what the C5's parked radio has collected about the focused target
+// (GET_DEVICE_PROFILE {view:"focus"}). Headers only; no payload is ever carried.
+#define FV_MAX_PEERS 12
+struct FvPeer {
+    char     mac[18] = {};
+    uint8_t  role = 0;                 // 0 unknown, 1 client of the target, 2 the AP the target uses
+    int8_t   rssi = -127;
+    uint32_t tof = 0, frf = 0;         // frames target -> peer, peer -> target
+    uint32_t tob = 0, frb = 0;         // bytes
+    uint32_t qos = 0, age_ms = 0;
+};
+struct FocusView {
+    bool     have = false;
+    char     mac[18] = {};
+    bool     wifi = false;
+    uint8_t  ch = 0;
+    uint32_t got_ms = 0, up_ms = 0, age_ms = 0;
+    int8_t   rssi = -127;
+    uint32_t n = 0, beacons = 0, presp = 0, preq = 0, omgmt = 0, data = 0;
+    uint32_t advs = 0, adv_int = 0;
+    uint8_t  ht = 0;
+    bool     has_iemap = false;
+    uint8_t  iemap[32] = {};
+    uint8_t  vie[8][4] = {};
+    uint8_t  nvie = 0;
+    uint8_t  raw[62] = {};
+    uint8_t  raw_len = 0;
+    FvPeer   peers[FV_MAX_PEERS];
+    uint8_t  npeers = 0;
+};
+extern FocusView g_fv;
+bool model_ingest_focus(const uint8_t* cbor, size_t n);
+void model_focus_clear();
+
+// RSSI_TICK events for the focused target (HUNT)
+struct HuntTick {
+    char     mac[18] = {};
+    int8_t   rssi = -127;
+    uint32_t heard_ms = 0;             // local time the target was last heard
+    bool     ever = false;
+};
+extern HuntTick g_hunt;
+extern char g_focus_keep[18];      // MAC the list sync must not drop (the focused peer)
+void model_ingest_tick(const uint8_t* cbor, size_t n);
+
+// A peer picked on LINKS / TRAFF becomes a local placeholder until the C5 lists it
+Det* model_add_peer(const char* mac, uint8_t radio, uint8_t ch, int rssi);
 
 extern Model g_model;
 

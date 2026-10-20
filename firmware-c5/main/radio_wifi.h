@@ -15,3 +15,4 @@ bool     radio_wifi_enabled(void);
 bool     radio_wifi_encode_aps(ss_cbor_w_t* w);
 void     radio_wifi_log_stats(void);             // one summary line on the console
 uint32_t radio_wifi_ap_count(void);
+void     radio_wifi_set_data_filter(bool on);    // focus mode: also receive data-frame headers

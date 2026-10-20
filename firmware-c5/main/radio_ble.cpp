@@ -20,12 +20,14 @@
 #include "registry.h"
 #include "signatures.h"
 #include "odid_util.h"
+#include "focus.h"
 
 static const char* TAG = "ble";
 
 static volatile bool s_enabled = false;     // scanning wanted (off in charge mode)
 static volatile bool s_synced = false;      // NimBLE host ready
 static uint8_t s_own_addr_type = 0;
+static volatile bool s_focus = false;       // full-duty scan while a BLE target is focused
 
 // ---- parsed advertisement ----------------------------------------------------------------------
 #define MAX_SVC16 8
@@ -306,6 +308,7 @@ static void on_advert(const struct ble_gap_disc_desc* disc) {
     a.evtype = disc->event_type;
     parse_adv(disc->data, disc->length_data, a);
     dev_note(a);
+    focus_note_ble(a.mac, disc->rssi, disc->data, disc->length_data);   // no-op unless focused on this device
 
     int confidence = 0, best = 0;
     const char* rule = nullptr;
@@ -363,14 +366,14 @@ static void start_scan(void) {
     if (!s_synced || !s_enabled) return;
     struct ble_gap_disc_params dp = {};
     dp.itvl = BLE_GAP_SCAN_ITVL_MS(100);                 // 100 ms interval,
-    dp.window = BLE_GAP_SCAN_WIN_MS(50);                 // 50 ms window: leaves the radio time for Wi-Fi
+    dp.window = BLE_GAP_SCAN_WIN_MS(s_focus ? 100 : 50); // 50 ms window leaves the radio time for Wi-Fi; focus listens full-time
     dp.filter_policy = BLE_HCI_SCAN_FILT_NO_WL;
     dp.limited = 0;
     dp.passive = 1;                                      // PASSIVE: never sends a scan request
     dp.filter_duplicates = 0;                            // keep every advert so RSSI keeps updating
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &dp, gap_cb, nullptr);
     if (rc != 0 && rc != BLE_HS_EALREADY) ESP_LOGW(TAG, "ble_gap_disc failed: %d", rc);
-    else ESP_LOGI(TAG, "passive scan started (100/50 ms)");
+    else ESP_LOGI(TAG, "passive scan started (100/%d ms)", s_focus ? 100 : 50);
 }
 
 static int gap_cb(struct ble_gap_event* ev, void*) {
@@ -402,6 +405,14 @@ static void host_task(void*) {
 }
 
 bool radio_ble_enabled(void) { return s_enabled; }
+
+void radio_ble_set_focus(bool on) {
+    if (on == s_focus) return;
+    s_focus = on;
+    if (!s_synced || !s_enabled) return;
+    ble_gap_disc_cancel();                               // restart with the new window (still passive)
+    start_scan();
+}
 
 void radio_ble_set_enabled(bool on) {
     if (on == s_enabled) return;

@@ -36,4 +36,6 @@ int  ui_active_tab();                         // the main loop polls the C5 base
 void ui_invalidate();                         // redraw everything (e.g. returning from charge mode)
 bool ui_wants_aps();                          // true while the SCOPE tab shows a Wi-Fi band
 bool ui_wants_ble();                          // true while the SCOPE tab shows the BLE view
+bool ui_wants_focus(char* mac_out);            // true while INFO shows a live detection: the C5 should park on it
+int  ui_focus_view_period();                   // ms between focus-view polls for the page showing (0 = none)
 bool ui_wants_profile(char* mac_out);         // true while INFO shows a detection; copies its MAC text

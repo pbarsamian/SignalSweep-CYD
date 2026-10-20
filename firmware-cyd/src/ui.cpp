@@ -8,6 +8,7 @@
 #include "theme.h"
 #include "model.h"
 #include "mode.h"
+#include <stdarg.h>
 
 extern TFT_eSPI tft;                 // owned by status_ui.cpp
 extern uint8_t  g_backlight;
@@ -24,6 +25,7 @@ static bool     s_hdr_dirty = true;
 static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
 static int      s_set_page = 0;          // 0 alerts, 1 device
 static int      s_scroll = 0;            // LIST / INFO scroll offset
+static int      s_sub = 0;               // INFO sub-page: 0 INFO, 1 LINKS, 2 TRAFF, 3 RAW, 4 HUNT
 static int      s_scope_band = 2;        // 2 = 2.4 GHz, 5 = 5 GHz, 0 = BLE
 static uint32_t s_drawn_ms = 0;
 static char     s_sel_mac[18] = {};
@@ -276,6 +278,54 @@ static void draw_ble_canvas(int sx, int sy, int sw, int sh) {
     }
 }
 
+// Access points of one band, strongest first (indices into g_model.aps)
+static int ap_order(int band, int* order) {
+    int n = 0;
+    for (int i = 0; i < g_model.naps; i++)
+        if (g_model.aps[i].used && g_model.aps[i].band == band) order[n++] = i;
+    for (int i = 1; i < n; i++) {
+        int k = order[i], j = i - 1;
+        while (j >= 0 && g_model.aps[order[j]].rssi < g_model.aps[k].rssi) { order[j + 1] = order[j]; j--; }
+        order[j + 1] = k;
+    }
+    return n;
+}
+
+// Wi-Fi band views list the strongest access points under the scope. Tap one to open its INFO page and
+// focus it (LINKS / TRAFF / RAW / HUNT then work on it like on any detection).
+static void draw_ap_rows(int sy, int sh) {
+    int order[MODEL_MAX_APS];
+    int n = ap_order(s_scope_band, order);
+    int ry = sy + sh + 32, shown = 0;
+    for (int k = 0; k < n && ry + ROW_H <= PAGE_Y + PAGE_H; k++) {
+        const ApRow& a = g_model.aps[order[k]];
+        uint16_t bg = (shown % 2 == 0) ? C_PANEL : C_PANEL2;
+        tft.fillRect(0, ry, SCREEN_W, ROW_H - 1, bg);
+        tft.fillRect(0, ry, 3, ROW_H - 1, C_ACCENT);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(C_ACCENT, bg);
+        tft.drawString("AP", 6, ry + ROW_H / 2, 1);
+        tft.setTextColor(a.ssid[0] ? C_WHITE : C_MDGREY, bg);
+        char nm[24];
+        snprintf(nm, sizeof(nm), "%.22s", a.ssid[0] ? a.ssid : "(hidden)");
+        tft.drawString(nm, 26, ry + ROW_H / 2, 1);
+        char rb[16];
+        snprintf(rb, sizeof(rb), "ch%d  %d", a.ch, a.rssi);
+        tft.setTextColor(C_LTGREY, bg);
+        tft.setTextDatum(MR_DATUM);
+        tft.drawString(rb, SCREEN_W - 16, ry + ROW_H / 2, 1);
+        int cx = SCREEN_W - 8, cy = ry + ROW_H / 2;
+        tft.fillTriangle(cx - 3, cy - 5, cx - 3, cy + 5, cx + 3, cy, C_ACCENT);
+        ry += ROW_H; shown++;
+    }
+    if (ry < PAGE_Y + PAGE_H) tft.fillRect(0, ry, SCREEN_W, PAGE_Y + PAGE_H - ry, C_BLACK);
+    if (shown == 0) {
+        tft.setTextColor(C_MDGREY, C_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("No access points yet", SCREEN_W / 2, sy + sh + 46, 2);
+    }
+}
+
 static void draw_scope() {
     const int LMARGIN = 24, RMARGIN = 6;
     int sy = PAGE_Y + 1, sh = 84, sx = LMARGIN, sw = SCREEN_W - LMARGIN - RMARGIN;
@@ -384,6 +434,8 @@ static void draw_scope() {
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(MC_DATUM);
     tft.drawString(s_scope_band == 2 ? "2.4 GHz channels" : s_scope_band == 5 ? "5 GHz channels" : "BLE devices, strongest first", sx + sw / 2, sy + sh + 22, 1);
+
+    if (s_scope_band != 0) { draw_ap_rows(sy, sh); return; }
 
     // Detection rows under the scope
     int ry = sy + sh + 32, shown = 0;
@@ -572,6 +624,47 @@ static void add_profile_rows(const Det& d) {
     (void)t;
 }
 
+// ---- focus: what INFO asks of the C5 -------------------------------------------------------------
+bool ui_wants_focus(char* mac_out) {
+    if (s_tab != TAB_INFO || !s_have_sel || s_diag || s_sel_gone) return false;
+    strncpy(mac_out, s_sel_mac, 18);
+    mac_out[17] = 0;
+    return true;
+}
+
+// LINKS / TRAFF / RAW change with the traffic: poll quickly. INFO only needs the focus rows now and then.
+// HUNT is fed by the C5's own RSSI ticks, so it needs no polling.
+int ui_focus_view_period() { return (s_sub >= 1 && s_sub <= 3) ? 1000 : (s_sub == 0 ? 2000 : 0); }
+
+static const char* vie_name(const uint8_t* o) {
+    if (o[0] == 0x00 && o[1] == 0x50 && o[2] == 0xF2) return "Microsoft/WPA";
+    if (o[0] == 0x00 && o[1] == 0x17 && o[2] == 0xF2) return "Apple";
+    if (o[0] == 0x00 && o[1] == 0x10 && o[2] == 0x18) return "Broadcom";
+    if (o[0] == 0x00 && o[1] == 0x03 && o[2] == 0x7F) return "Atheros/Qualcomm";
+    if (o[0] == 0x50 && o[1] == 0x6F && o[2] == 0x9A) return "Wi-Fi Alliance";
+    return nullptr;
+}
+
+static bool fv_for(const Det& d) { return g_fv.have && strcmp(g_fv.mac, d.mac) == 0; }
+
+// Identity gathered by the parked radio (the C5 focus view), appended to INFO
+static void add_focus_rows(const Det& d) {
+    if (!fv_for(d)) { ROW("Focus", "engaging radio..."); return; }
+    if (g_fv.wifi) {
+        ROW("Focus", "locked on ch%d", g_fv.ch);
+        if (g_fv.ht) ROW("Spatial streams", "%dx%d", g_fv.ht, g_fv.ht);
+        ROW("Frames (focus)", "%u b=%u pr=%u", (unsigned)g_fv.n, (unsigned)g_fv.beacons, (unsigned)g_fv.presp);
+        for (int i = 0; i < g_fv.nvie; i++) {
+            const char* who = vie_name(g_fv.vie[i]);
+            if (who) ROW("Vendor IE", "%s", who);
+        }
+    } else {
+        ROW("Focus", "BLE, full duty");
+        ROW("Adverts (focus)", "%u", (unsigned)g_fv.advs);
+        if (g_fv.adv_int) ROW("Advert interval", "~%u ms", (unsigned)g_fv.adv_int);
+    }
+}
+
 static void build_rows(const Det& d, uint32_t now) {
     s_nrows = 0;
     char t[28];
@@ -591,6 +684,356 @@ static void build_rows(const Det& d, uint32_t now) {
     ROW("Alert", "%s (strongest %d)", d.best >= CONF_ALERT_MIN ? "yes" : "no", d.best);
     ROW("Muted", "%s", d.muted ? "Yes" : "No");
     add_profile_rows(d);
+    add_focus_rows(d);
+}
+
+// ---- LINKS / TRAFF / RAW pages ------------------------------------------------------------------
+// Rows are rebuilt on every draw from the focus view (g_fv) and the detection model. Peer rows are
+// tappable: the tap pivots focus to that device. Headers only: the C5 never sends a payload.
+enum { LR_HEAD = 0, LR_INFO = 1, LR_PEER = 2 };
+struct LRow {
+    char     text[48];
+    uint8_t  kind;
+    uint8_t  radio;       // 0 wifi, 1 ble (for LR_PEER)
+    uint8_t  ch;
+    int8_t   rssi;
+    char     mac[18];
+    uint16_t color;
+};
+static LRow s_lrows[44];
+static int  s_nl = 0;
+
+static LRow* lrow_v(uint8_t kind, uint16_t color, const char* fmt, va_list ap) {
+    if (s_nl >= (int)(sizeof(s_lrows) / sizeof(s_lrows[0]))) return nullptr;
+    LRow& r = s_lrows[s_nl++];
+    memset(&r, 0, sizeof(r));
+    r.kind = kind; r.color = color; r.rssi = -100;
+    vsnprintf(r.text, sizeof(r.text), fmt, ap);
+    return &r;
+}
+
+static LRow* lrow(uint8_t kind, uint16_t color, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    LRow* r = lrow_v(kind, color, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+static void lrow_peer(uint16_t color, uint8_t radio, uint8_t ch, int rssi, const char* mac, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    LRow* r = lrow_v(LR_PEER, color, fmt, ap);
+    va_end(ap);
+    if (!r) return;
+    r->radio = radio; r->ch = ch; r->rssi = (int8_t)constrain(rssi, -127, 0);
+    strncpy(r->mac, mac, sizeof(r->mac) - 1);
+}
+
+static void fmt_bytes(char* out, size_t n, uint32_t b) {
+    if (b < 1000)         snprintf(out, n, "%uB", (unsigned)b);
+    else if (b < 1000000) snprintf(out, n, "%uK", (unsigned)(b / 1000));
+    else                  snprintf(out, n, "%.1fM", b / 1e6f);
+}
+
+static bool parse_mac6(const char* s, uint8_t out[6]) {
+    unsigned v[6];
+    if (sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5]) != 6) return false;
+    for (int i = 0; i < 6; i++) out[i] = (uint8_t)v[i];
+    return true;
+}
+
+// Same device family: octets 0-4 equal (ignoring the locally-administered bit), last octet close.
+// That is how multi-radio / multi-SSID gear allocates its base MACs.
+static bool same_block(const uint8_t* a, const uint8_t* b) {
+    if ((a[0] | 0x02) != (b[0] | 0x02)) return false;
+    for (int i = 1; i < 5; i++) if (a[i] != b[i]) return false;
+    return abs((int)a[5] - (int)b[5]) <= 16;
+}
+
+static void build_links(const Det& d) {
+    s_nl = 0;
+    bool fvm = fv_for(d);
+    lrow(LR_HEAD, C_SIGNAL, "OBSERVED");
+    bool any = false;
+    if (d.radio == 2) { lrow(LR_INFO, C_WHITE, "Same MAC heard on BLE and Wi-Fi"); any = true; }
+    if (g_profile.have && strcmp(g_profile.mac, d.mac) == 0 && g_profile.probe[0]) {
+        lrow(LR_INFO, C_WHITE, "Probes for: %s", g_profile.probe); any = true;
+    }
+    if (fvm && g_fv.wifi) {
+        for (int i = 0; i < g_fv.npeers; i++) {
+            const FvPeer& p = g_fv.peers[i];
+            if (p.role == 0) continue;
+            lrow_peer(C_ACCENT, 0, g_fv.ch, p.rssi, p.mac, "%s %s", p.role == 2 ? "AP " : "STA", p.mac);
+            any = true;
+        }
+        if (!any) lrow(LR_INFO, C_MDGREY, "No AP/client links seen yet");
+    } else if (fvm) {
+        if (!any) lrow(LR_INFO, C_MDGREY, "Nothing observable yet");
+        lrow(LR_INFO, C_MDGREY, "BLE pairings/connections hop channels");
+        lrow(LR_INFO, C_MDGREY, "this radio can't follow: not visible");
+    } else {
+        lrow(LR_INFO, C_MDGREY, "Collecting from target...");
+    }
+
+    lrow(LR_HEAD, C_ATTACK, "INFERRED");
+    bool inf = false;
+    uint8_t tm[6];
+    if (parse_mac6(d.mac, tm)) {
+        for (int i = 0; i < g_model.ndets; i++) {
+            const Det& e = g_model.dets[i];
+            uint8_t em[6];
+            if (!e.used || strcmp(e.mac, d.mac) == 0 || !parse_mac6(e.mac, em) || !same_block(em, tm)) continue;
+            lrow_peer(C_ATTACK, e.radio == 1 ? 1 : 0, e.ch, e.rssi, e.mac, "SIB %s %.18s", e.mac, e.ssid[0] ? e.ssid : e.name);
+            inf = true;
+        }
+    }
+    if (!inf) lrow(LR_INFO, C_MDGREY, "Nothing inferred yet");
+
+    lrow(LR_HEAD, C_MDGREY, "CORRELATED");
+    lrow(LR_INFO, C_MDGREY, "Needs session history on SD (planned)");
+}
+
+static void build_traffic(const Det& d) {
+    s_nl = 0;
+    if (!fv_for(d)) { lrow(LR_INFO, C_MDGREY, "Collecting from target..."); return; }
+    if (!g_fv.wifi) {
+        lrow(LR_INFO, C_MDGREY, "BLE target: adverts only. Connections");
+        lrow(LR_INFO, C_MDGREY, "hop channels and can't be followed.");
+        lrow(LR_INFO, C_WHITE, "Adverts heard: %u", (unsigned)g_fv.advs);
+        return;
+    }
+    lrow(LR_HEAD, C_SIGNAL, "data %u  mgmt %u  peers %u", (unsigned)g_fv.data, (unsigned)g_fv.n, g_fv.npeers);
+    for (int i = 0; i < g_fv.npeers; i++) {                 // the C5 sends them busiest first
+        const FvPeer& p = g_fv.peers[i];
+        char b[10], r[8] = "";
+        fmt_bytes(b, sizeof(b), p.tob + p.frb);
+        if (p.frf) snprintf(r, sizeof(r), " %d", p.rssi);
+        lrow_peer(C_WHITE, 0, g_fv.ch, p.rssi, p.mac, "%s >%u <%u %s%s%s", p.mac, (unsigned)p.tof, (unsigned)p.frf, b,
+                  p.qos ? " Q" : "", r);
+    }
+    if (g_fv.npeers == 0) {
+        lrow(LR_INFO, C_MDGREY, "No peers yet. Needs a busy target:");
+        lrow(LR_INFO, C_MDGREY, "an AP with clients, or an active client.");
+    }
+}
+
+static void hexline(char* out, size_t cap, const uint8_t* p, int n) {
+    size_t k = 0;
+    out[0] = 0;
+    for (int i = 0; i < n && k + 4 < cap; i++) k += snprintf(out + k, cap - k, "%02X ", p[i]);
+    if (k) out[k - 1] = 0;
+}
+
+static const char* ad_name(uint8_t t) {
+    switch (t) {
+        case 0x01: return "flags";   case 0x02: case 0x03: return "uuid16";  case 0x06: case 0x07: return "uuid128";
+        case 0x08: case 0x09: return "name"; case 0x0A: return "txpower";    case 0x16: return "svcdata";
+        case 0x19: return "appear";  case 0xFF: return "mfg";                default: return "type";
+    }
+}
+
+static void build_raw(const Det& d) {
+    s_nl = 0;
+    if (!fv_for(d)) { lrow(LR_INFO, C_MDGREY, "Collecting from target..."); return; }
+    char tmp[48];
+    if (!g_fv.wifi) {
+        if (!g_fv.raw_len) { lrow(LR_INFO, C_MDGREY, "No advert captured yet"); return; }
+        lrow(LR_HEAD, C_SIGNAL, "ADVERT PAYLOAD (%u bytes)", g_fv.raw_len);
+        for (int off = 0; off < g_fv.raw_len; off += 14) {
+            hexline(tmp, sizeof(tmp), g_fv.raw + off, min(14, g_fv.raw_len - off));
+            lrow(LR_INFO, C_WHITE, "%s", tmp);
+        }
+        lrow(LR_HEAD, C_ACCENT, "DECODED");
+        int i = 0;
+        while (i + 1 < g_fv.raw_len) {
+            int l = g_fv.raw[i];
+            if (l == 0 || i + 1 + l > g_fv.raw_len) break;
+            uint8_t t = g_fv.raw[i + 1];
+            int dl = l - 1;
+            hexline(tmp, sizeof(tmp), g_fv.raw + i + 2, min(dl, 8));
+            lrow(LR_INFO, C_LTGREY, "%02X %-8s %s%s", t, ad_name(t), tmp, dl > 8 ? ".." : "");
+            i += 1 + l;
+        }
+        return;
+    }
+    if (!g_fv.has_iemap) { lrow(LR_INFO, C_MDGREY, "No beacon / probe frame from the"); lrow(LR_INFO, C_MDGREY, "target captured yet."); return; }
+    lrow(LR_HEAD, C_SIGNAL, "ELEMENT IDS SEEN");
+    char line[44] = "";
+    for (int id = 0; id < 256; id++) {
+        if (!(g_fv.iemap[id >> 3] & (1 << (id & 7)))) continue;
+        char t[6];
+        snprintf(t, sizeof(t), "%d ", id);
+        if (strlen(line) + strlen(t) >= 40) { lrow(LR_INFO, C_WHITE, "%s", line); line[0] = 0; }
+        strncat(line, t, sizeof(line) - strlen(line) - 1);
+    }
+    if (line[0]) lrow(LR_INFO, C_WHITE, "%s", line);
+    if (g_fv.ht) lrow(LR_INFO, C_LTGREY, "HT spatial streams: %u", g_fv.ht);
+    lrow(LR_HEAD, C_ACCENT, "VENDOR IES");
+    for (int i = 0; i < g_fv.nvie; i++) {
+        const uint8_t* o = g_fv.vie[i];
+        const char* who = vie_name(o);
+        lrow(LR_INFO, C_WHITE, "%02X:%02X:%02X t%02X %s", o[0], o[1], o[2], o[3], who ? who : "");
+    }
+    if (g_fv.nvie == 0) lrow(LR_INFO, C_MDGREY, "none");
+}
+
+static void draw_rows_generic() {
+    int maxs = max(0, s_nl - DVIS);
+    if (s_scroll > maxs) s_scroll = maxs;
+    int lw = SCREEN_W - DSTRIP_W;
+    for (int r = 0; r < DVIS; r++) {
+        int y = DLIST_Y + r * DROW_H, i = s_scroll + r;
+        uint16_t bg = (i % 2 == 0) ? C_PANEL : C_PANEL2;
+        if (i >= s_nl) { tft.fillRect(0, y, lw, DROW_H - 1, C_BLACK); continue; }
+        const LRow& row = s_lrows[i];
+        if (row.kind == LR_HEAD) bg = C_BLACK;
+        tft.fillRect(0, y, lw, DROW_H - 1, bg);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(row.color, bg);
+        tft.drawString(row.text, row.kind == LR_HEAD ? 4 : 8, y + DROW_H / 2, 1);
+        if (row.kind == LR_PEER) {                             // chevron: tap to pivot
+            int cx = lw - 8, cy = y + DROW_H / 2;
+            tft.fillTriangle(cx - 3, cy - 5, cx - 3, cy + 5, cx + 3, cy, C_ACCENT);
+        }
+    }
+    int sx = SCREEN_W - DSTRIP_W;
+    tft.fillRect(sx, DLIST_Y, DSTRIP_W, DLIST_H, C_BLACK);
+    uint16_t uc = s_scroll > 0 ? C_ACCENT : C_BORDER, dc = s_scroll < maxs ? C_ACCENT : C_BORDER;
+    int cx = sx + DSTRIP_W / 2;
+    tft.fillTriangle(cx, DLIST_Y + 2, cx - 6, DLIST_Y + 12, cx + 6, DLIST_Y + 12, uc);
+    tft.fillTriangle(cx, DLIST_Y + DLIST_H - 2, cx - 6, DLIST_Y + DLIST_H - 12, cx + 6, DLIST_Y + DLIST_H - 12, dc);
+}
+
+static void draw_link_page(const Det& d) {
+    if (s_sub == 1) build_links(d);
+    else if (s_sub == 2) build_traffic(d);
+    else build_raw(d);
+    draw_rows_generic();
+}
+
+// Focus the device behind a tapped LINKS / TRAFF row. The C5 lists a Wi-Fi peer it has never matched as
+// a low-confidence "Peer (pivot)" entry, so INFO / RAW / HUNT work on it like on any detection.
+static void pivot_to(const LRow& r) {
+    Det* nd = model_add_peer(r.mac, r.radio, r.ch, r.rssi);
+    if (!nd) { toast("detection list full: can't pivot"); return; }
+    strncpy(s_sel_mac, r.mac, sizeof(s_sel_mac) - 1);
+    s_sel_mac[sizeof(s_sel_mac) - 1] = 0;
+    s_have_sel = true; s_sel_gone = false;
+    s_sub = 0; s_scroll = 0; s_dirty = true;
+}
+
+// ---- HUNT ----------------------------------------------------------------------------------------
+// Geiger-style walk-down on the focused target: click rate, screen ring and RGB LED all speed up with
+// RSSI, and go quiet after HUNT_SILENCE_MS without contact. RSSI arrives as the C5's RSSI_TICK events.
+#define HUNT_SILENCE_MS 8000
+#define HUNT_RSSI_FLOOR -95
+#define HUNT_RSSI_CEIL  -35
+
+static bool     s_hunt_active = false;
+static uint32_t s_hunt_last_click = 0, s_hunt_last_pulse = 0, s_hunt_draw_ms = 0;
+static bool     s_hunt_pulse_state = false;
+static int      s_hunt_peak = -128, s_hunt_prev_rssi = -128;
+static char     s_hunt_peak_mac[18] = {};
+
+static float hunt_t(int rssi) {
+    int r = constrain(rssi, HUNT_RSSI_FLOOR, HUNT_RSSI_CEIL);
+    return (float)(r - HUNT_RSSI_FLOOR) / (HUNT_RSSI_CEIL - HUNT_RSSI_FLOOR);       // 0 far .. 1 near
+}
+static uint32_t hunt_interval(int rssi) { return (uint32_t)(1200 - hunt_t(rssi) * 1130); }   // 1.2 s far .. 70 ms near
+
+static uint16_t hunt_heat(int rssi) {                                              // blue -> cyan -> amber -> red
+    float t = hunt_t(rssi);
+    uint8_t R, G, B;
+    if (t < 0.5f) { float u = t / 0.5f; R = 0; G = (uint8_t)(128 + 127 * u); B = (uint8_t)(255 - 100 * u); }
+    else { float u = (t - 0.5f) / 0.5f; R = (uint8_t)(255 * u); G = (uint8_t)(255 - 100 * u); B = (uint8_t)(155 - 155 * u); }
+    return tft.color565(R, G, B);
+}
+
+static void hunt_led(bool on, int rssi) {                                          // active LOW
+    float t = hunt_t(rssi);
+    digitalWrite(PIN_LED_R, (on && t > 0.4f) ? LOW : HIGH);
+    digitalWrite(PIN_LED_G, (on && t < 0.6f) ? LOW : HIGH);
+    digitalWrite(PIN_LED_B, (on && t < 0.3f) ? LOW : HIGH);
+}
+
+static void hunt_all_off() {
+    if (!s_beep_until) { ledcWriteTone(1, 0); ledcWrite(1, 0); }                  // never cut an alert tone short
+    if (!s_led_until) { digitalWrite(PIN_LED_R, HIGH); digitalWrite(PIN_LED_G, HIGH); digitalWrite(PIN_LED_B, HIGH); }
+}
+
+// Latest reading for the target: the C5's tick when it matches, else what the list last said
+static bool hunt_sample(const Det& d, bool gone, int* rssi, uint32_t* age) {
+    uint32_t now = millis();
+    if (g_hunt.ever && strcmp(g_hunt.mac, d.mac) == 0) { *age = now - g_hunt.heard_ms; *rssi = g_hunt.rssi; }
+    else { *age = now - d.last_ms; *rssi = d.rssi; }
+    return !gone && *age < HUNT_SILENCE_MS;
+}
+
+static void hunt_tick(const Det& d, bool gone) {
+    uint32_t now = millis();
+    int rssi; uint32_t age;
+    bool live = hunt_sample(d, gone, &rssi, &age);
+    s_hunt_active = true;
+    if (strcmp(s_hunt_peak_mac, d.mac) != 0) {                                      // new target: reset the trend
+        strncpy(s_hunt_peak_mac, d.mac, sizeof(s_hunt_peak_mac) - 1);
+        s_hunt_peak = -128; s_hunt_prev_rssi = -128;
+    }
+    if (live && rssi > s_hunt_peak) s_hunt_peak = rssi;
+    if (!live) { hunt_all_off(); s_hunt_pulse_state = false; return; }
+    uint32_t iv = hunt_interval(rssi);
+    if (g_ui_set.speaker && now - s_hunt_last_click >= iv) { s_hunt_last_click = now; ledcWriteTone(1, 3000); }
+    else if (now - s_hunt_last_click >= 12 && !s_beep_until) ledcWrite(1, 0);       // end the click quickly
+    if (now - s_hunt_last_pulse >= iv) {
+        s_hunt_last_pulse = now;
+        s_hunt_pulse_state = !s_hunt_pulse_state;
+        if (g_ui_set.led && !s_led_until) hunt_led(s_hunt_pulse_state, rssi);
+    }
+}
+
+static void draw_hunt_body(const Det& d, bool gone) {
+    int rssi; uint32_t age;
+    bool live = hunt_sample(d, gone, &rssi, &age);
+    uint16_t heat = live ? hunt_heat(rssi) : C_PANEL;
+    int cy = (DHEAD_Y + TAB_Y) / 2;
+
+    int ringR = 46;
+    uint16_t ringc = (live && s_hunt_pulse_state) ? heat : C_BLACK;                  // strobes with the clicks
+    tft.fillCircle(SCREEN_W / 2, cy, ringR, ringc);
+    tft.drawCircle(SCREEN_W / 2, cy, ringR, live ? heat : C_BORDER);
+
+    char v[12];
+    if (live) snprintf(v, sizeof(v), "%d", rssi); else snprintf(v, sizeof(v), "--");
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextColor(live ? C_BLACK : C_MDGREY, ringc);
+    tft.drawString(v, SCREEN_W / 2, cy - 6, 6);
+    tft.drawString("dBm", SCREEN_W / 2, cy + 20, 2);
+
+    tft.setTextDatum(ML_DATUM);
+    tft.fillRect(4, DHEAD_Y + 6, 70, 60, C_BLACK);
+    const char* arrow = "--";
+    uint16_t ac = C_MDGREY;
+    if (live) {
+        if (rssi > s_hunt_prev_rssi + 1) { arrow = "WARMER"; ac = C_TRACKER; }
+        else if (rssi < s_hunt_prev_rssi - 1) { arrow = "colder"; ac = C_ACCENT; }
+        else { arrow = "steady"; ac = C_LTGREY; }
+        s_hunt_prev_rssi = rssi;
+    }
+    tft.setTextColor(ac, C_BLACK);
+    tft.drawString(arrow, 6, DHEAD_Y + 16, 2);
+    char pk[16];
+    snprintf(pk, sizeof(pk), "peak %d", s_hunt_peak > -128 ? s_hunt_peak : 0);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    tft.drawString(pk, 6, DHEAD_Y + 36, 2);
+
+    tft.setTextDatum(MR_DATUM);
+    tft.fillRect(SCREEN_W - 78, DHEAD_Y + 6, 74, 60, C_BLACK);
+    char ls[18];
+    if (gone) snprintf(ls, sizeof(ls), "aged out");
+    else if (!g_hunt.ever && !live) snprintf(ls, sizeof(ls), "waiting");
+    else snprintf(ls, sizeof(ls), "%us ago", (unsigned)(age / 1000));
+    tft.setTextColor(live ? C_LTGREY : C_CAMERA, C_BLACK);
+    tft.drawString(ls, SCREEN_W - 6, DHEAD_Y + 16, 2);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    tft.drawString(g_ui_set.speaker ? "sound on" : "muted", SCREEN_W - 6, DHEAD_Y + 36, 2);
 }
 
 static const char* SUB_NAMES[] = { "INFO", "LINKS", "TRAFF", "RAW", "HUNT", "CAP" };
@@ -633,15 +1076,18 @@ static void draw_info() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString(nm, SCREEN_W / 2, PAGE_Y + 12, 1);
 
-    // Sub-tabs: INFO is live; the rest need C5 features that are not built yet
+    // Sub-tabs: INFO LINKS TRAFF RAW HUNT are live; CAP needs the SD capture (not built)
     int w = SCREEN_W / 6;
     for (int i = 0; i < 6; i++) {
-        bool on = (i == 0);
+        bool on = (i == s_sub);
         tft.fillRect(i * w, SUBTAB_Y, w - 1, SUBTAB_H - 1, on ? tc : C_PANEL);
-        tft.setTextColor(on ? C_BLACK : C_BORDER, on ? tc : C_PANEL);
+        tft.setTextColor(on ? C_BLACK : (i == 5 ? C_BORDER : C_LTGREY), on ? tc : C_PANEL);
         tft.setTextDatum(MC_DATUM);
         tft.drawString(SUB_NAMES[i], i * w + w / 2, SUBTAB_Y + SUBTAB_H / 2 - 1, 1);
     }
+
+    if (s_sub >= 1 && s_sub <= 3) { draw_link_page(d); return; }
+    if (s_sub == 4) { draw_hunt_body(d, gone); return; }
 
     build_rows(d, millis());
     int maxs = max(0, s_nrows - DVIS);
@@ -783,6 +1229,12 @@ void ui_update(const UiCtx& c) {
     uint32_t period = (s_tab == TAB_SCOPE) ? 500 : (s_tab == TAB_INFO ? 500 : 1000);
     bool due = s_dirty || (now - s_drawn_ms >= period);
     if (last_tab != s_tab) { last_tab = s_tab; clear_page(); due = true; }
+    if (s_tab == TAB_INFO && s_have_sel && s_sub == 4 && !s_diag) {          // HUNT: clicks and ring run at their own pace
+        Det* hd = model_find(s_sel_mac);
+        const Det& hr = hd ? *hd : s_sel_last;
+        hunt_tick(hr, hd == nullptr);
+        if (!due && now - s_hunt_draw_ms >= 100) { s_hunt_draw_ms = now; draw_hunt_body(hr, hd == nullptr); }
+    } else if (s_hunt_active) { hunt_all_off(); s_hunt_pulse_state = false; s_hunt_active = false; }
     if (due) {
         s_drawn_ms = now;
         if (s_dirty) clear_page();
@@ -815,9 +1267,26 @@ void ui_touch(int tx, int ty) {
         if (in_rect(tx, ty, SCREEN_W - 6 - 58, PAGE_Y + 3, 60, 16)) { s_scope_band = (s_scope_band == 2) ? 5 : (s_scope_band == 5) ? 0 : 2; s_dirty = true; return; }
         // tap a detection row under the scope: open it
         int ry0 = PAGE_Y + 1 + 84 + 32;
+        if (ty >= ry0 && s_scope_band != 0) {                  // an access point row: open it and focus it
+            int order[MODEL_MAX_APS];
+            int n = ap_order(s_scope_band, order), k = (ty - ry0) / ROW_H;
+            if (k < n) {
+                const ApRow& a = g_model.aps[order[k]];
+                Det* d = model_add_peer(a.mac, 0, a.ch, a.rssi);
+                if (!d) { toast("detection list full: can't open it"); return; }
+                if (d->type == T_UNKNOWN) {                        // a peer placeholder: name it after the network
+                    snprintf(d->name, sizeof(d->name), "%s", a.ssid[0] ? a.ssid : "AP (hidden)");
+                    strncpy(d->ssid, a.ssid, sizeof(d->ssid) - 1);
+                }
+                strncpy(s_sel_mac, d->mac, sizeof(s_sel_mac) - 1);
+                s_have_sel = true; s_sel_gone = false;
+                s_tab = TAB_INFO; s_scroll = 0; s_sub = 0; s_dirty = true;
+            }
+            return;
+        }
         if (ty >= ry0) {
             int i = visible_index((ty - ry0) / ROW_H);
-            if (i >= 0) { strncpy(s_sel_mac, g_model.dets[i].mac, sizeof(s_sel_mac) - 1); s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_dirty = true; }
+            if (i >= 0) { strncpy(s_sel_mac, g_model.dets[i].mac, sizeof(s_sel_mac) - 1); s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_sub = 0; s_dirty = true; }
         }
         return;
     }
@@ -831,7 +1300,7 @@ void ui_touch(int tx, int ty) {
             return;
         }
         int i = visible_index(s_scroll + (ty - PAGE_Y) / ROW_H);
-        if (i >= 0) { strncpy(s_sel_mac, g_model.dets[i].mac, sizeof(s_sel_mac) - 1); s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_dirty = true; }
+        if (i >= 0) { strncpy(s_sel_mac, g_model.dets[i].mac, sizeof(s_sel_mac) - 1); s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_sub = 0; s_dirty = true; }
         return;
     }
     if (s_tab == TAB_INFO && s_have_sel) {
@@ -844,12 +1313,13 @@ void ui_touch(int tx, int ty) {
         }
         if (ty >= SUBTAB_Y && ty < SUBTAB_Y + SUBTAB_H) {
             int p = tx / (SCREEN_W / 6);
-            if (p > 0 && p < 6) {
-                static const char* NEEDS[] = { "", "LINKS needs C5 focus mode (not built yet)", "TRAFF needs C5 focus mode (not built yet)",
-                                               "RAW needs C5 focus mode (not built yet)", "HUNT needs C5 focus mode (not built yet)",
-                                               "CAP needs the SD capture (not built yet)" };
-                toast(NEEDS[p]);
-            }
+            if (p == 5) toast("CAP needs the SD capture (not built yet)");
+            else if (p >= 0 && p < 5 && p != s_sub) { s_sub = p; s_scroll = 0; s_dirty = true; }
+            return;
+        }
+        if ((s_sub == 1 || s_sub == 2) && tx < SCREEN_W - DSTRIP_W && ty >= DLIST_Y && ty < DLIST_Y + DLIST_H) {
+            int i = s_scroll + (ty - DLIST_Y) / DROW_H;
+            if (i >= 0 && i < s_nl && s_lrows[i].kind == LR_PEER) pivot_to(s_lrows[i]);
             return;
         }
         if (tx >= SCREEN_W - DSTRIP_W && ty >= DLIST_Y && ty < DLIST_Y + DLIST_H) {

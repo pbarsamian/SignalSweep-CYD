@@ -145,7 +145,15 @@
   conf=80 ... ALERT` and the same alerts reached the CYD as events. The nRF Connect 0xFEED (Tile) test has not been run.
 - Header shows `BLE n` (devices heard in the last 60 s; dim `BLE -` until the first reply or when stale), fed by a
   5 s background SCAN_BLE poll on every tab except the BLE view (issue #7).
-- Not built yet: scan scheduler, FOCUS_TARGET handler (opcode 0x15 is registry-only), M4/M6 consent flow.
+- Focus mode (issue #2): FOCUS_TARGET 0x15 is a lease (renewed every 5 s by the CYD, lapses after 15 s on the C5). Wi-Fi
+  parks on the target's channel and receives data-frame HEADERS for peers/traffic; BLE scans at full duty. INFO sub-tabs
+  LINKS (observed / inferred sibling MACs), TRAFF, RAW (advert hex + decoded / element IDs + vendor IEs) and HUNT (clicks, ring,
+  LED from RSSI_TICK events) are live; CAP stays a toast (SD capture, issue #10). Wi-Fi APs on the SCOPE 2.4/5 GHz views are
+  tappable rows that open and focus the AP. Wire details in PROTOCOL.md section 3b-3. Verified on hardware: BLE focus (advert
+  payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
+  Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, vendor names for peers (no OUI db yet).
+  Console test keys on the CYD: f focus first detection, F focus strongest AP, r release, k print the focus view.
+- Not built yet: scan scheduler, M4/M6 consent flow.
 - Next: M3b BLE passive scan + BLE signature rules, then scan_sched (BLE vs Wi-Fi time-slicing),
   FOCUS_TARGET, Remote ID.
 

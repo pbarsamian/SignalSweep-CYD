@@ -51,6 +51,7 @@ static ss_mode_t effective_mode(uint32_t now) {
         S.have_secret = false;
         memset(S.secret, 0, sizeof(S.secret));
         ESP_LOGW(TAG, "mode shadow went stale -> SILENT_RX, session dropped");
+        det_focus_stop("link lost");
     }
     return S.valid ? S.mode : SS_MODE_SILENT_RX;
 }
@@ -103,6 +104,7 @@ static void op_hello(uint8_t seq, const uint8_t* a, size_t n) {
     S.clk_offset = (int32_t)(t_ms - now_ms());    // lets us judge token freshness on the CYD clock
     S.low_reported = false;
     S.subscribed = false;                         // a new session must re-subscribe
+    det_focus_stop("new session");                // focus never survives a reconnect
     ss_token_reset_replay_window();
 
     uint8_t b[64];
@@ -189,6 +191,13 @@ static void op_scan_ble(uint8_t seq) {
 // GET_DEVICE_PROFILE {mac:text}: the deep passive profile of one detection (identity, signal, BLE /
 // Wi-Fi fields, decoded Remote ID). SS_ERR_OPCODE-style "unknown device" is reported as SS_ERR_BUSY.
 static void op_get_profile(uint8_t seq, const uint8_t* a, size_t n) {
+    ss_cbor_val_t vw;
+    if (ss_cbor_map_get(a, n, "view", &vw) && vw.type == SS_CBOR_TEXT && vw.n == 5 && memcmp(vw.ptr, "focus", 5) == 0) {
+        ss_cbor_w_t fw; ss_cbor_w_init(&fw, s_big, sizeof(s_big));
+        bool fok = det_encode_focus(&fw);                       // false: nothing is focused (lease lapsed?)
+        send_resp(seq, fok ? SS_OK : SS_ERR_BUSY, s_big, fok ? fw.len : 0);
+        return;
+    }
     ss_cbor_val_t m;
     char mac[24];
     if (!ss_cbor_map_get(a, n, "mac", &m) || m.type != SS_CBOR_TEXT || m.n == 0 || m.n >= sizeof(mac)) {
@@ -199,6 +208,14 @@ static void op_get_profile(uint8_t seq, const uint8_t* a, size_t n) {
     ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));
     bool ok = det_encode_profile(mac, &w);
     send_resp(seq, ok ? SS_OK : SS_ERR_BUSY, s_big, ok ? w.len : 0);
+}
+
+// FOCUS_TARGET {on, mac, radio, ch}: PASSIVE. Parks the radio on one target (or releases it).
+static void op_focus(uint8_t seq, const uint8_t* a, size_t n) {
+    uint8_t b[48];
+    ss_cbor_w_t w; ss_cbor_w_init(&w, b, sizeof(b));
+    int e = det_focus_request(a, n, &w);
+    send_resp(seq, w.err && e == SS_OK ? SS_ERR_BUSY : (uint8_t)e, b, e == SS_OK ? w.len : 0);
 }
 
 static void op_list_detections(uint8_t seq, const uint8_t* a, size_t n) {
@@ -280,7 +297,7 @@ void dispatch_handle(const ss_frame_t* f) {
     }
 
     if (!power_radio_allowed() &&
-        (op == SS_OP_SCAN_WIFI || op == SS_OP_SCAN_BLE || c->cls != SS_CLS_PASSIVE)) {
+        (op == SS_OP_SCAN_WIFI || op == SS_OP_SCAN_BLE || op == SS_OP_FOCUS_TARGET || c->cls != SS_CLS_PASSIVE)) {
         send_resp(f->seq, SS_ERR_BUSY, NULL, 0);   // charge mode: radio is off
         return;
     }
@@ -290,6 +307,7 @@ void dispatch_handle(const ss_frame_t* f) {
     case SS_OP_SCAN_BLE:         op_scan_ble(f->seq); return;
     case SS_OP_LIST_DETECTIONS:  op_list_detections(f->seq, p, n); return;
     case SS_OP_GET_DEVICE_PROFILE: op_get_profile(f->seq, p, n); return;
+    case SS_OP_FOCUS_TARGET:     op_focus(f->seq, p, n); return;
     case SS_OP_SUBSCRIBE_EVENTS: S.subscribed = true; send_resp(f->seq, SS_OK, NULL, 0); return;
     case SS_OP_TX_SLOT_A: case SS_OP_TX_SLOT_B: case SS_OP_TX_SLOT_C: case SS_OP_TX_SLOT_D:
         send_resp(f->seq, (uint8_t)tx_slot_run((ss_opcode_t)op, p, n), NULL, 0);
@@ -332,6 +350,12 @@ void dispatch_tick(void) {
             if (!det_pop_event(&w)) break;
             b[0] = SS_EVT_DETECTION;
             uart_slave_send(SS_T_EVENT, 0, 0, b, (uint16_t)(w.len + 1));
+        }
+        uint8_t fb[96];                               // focused-target RSSI for HUNT
+        ss_cbor_w_t fw; ss_cbor_w_init(&fw, fb + 1, sizeof(fb) - 1);
+        if (det_pop_focus_event(&fw)) {
+            fb[0] = SS_EVT_RSSI_TICK;
+            uart_slave_send(SS_T_EVENT, 0, 0, fb, (uint16_t)(fw.len + 1));
         }
     } else {
         // Not subscribed: drain so the queue never backs up

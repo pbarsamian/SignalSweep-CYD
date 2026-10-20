@@ -20,6 +20,7 @@
 #include "registry.h"
 #include "signatures.h"
 #include "odid_util.h"
+#include "focus.h"
 extern "C" {
 #include "odid_wifi.h"
 }
@@ -199,6 +200,11 @@ static uint8_t parse_rsn(const uint8_t* e, int len) {
 
 // ---- the promiscuous callback (runs in the Wi-Fi task: keep it light) ----------
 static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if (type == WIFI_PKT_DATA) {                       // only delivered while a focus is active (filter widened)
+        auto* dp = (wifi_promiscuous_pkt_t*)buf;
+        focus_note_wifi_data(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi);
+        return;
+    }
     if (type != WIFI_PKT_MGMT) return;
     STAT_INC(g_stats.wifi_mgmt);
     auto* pkt = (wifi_promiscuous_pkt_t*)buf;
@@ -207,6 +213,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     int rssi   = pkt->rx_ctrl.rssi;
     int rxCh   = pkt->rx_ctrl.channel;
     if (length < 24) return;
+    focus_note_wifi_mgmt(payload, length, rssi);        // no-op unless focused on a Wi-Fi target
 
     uint8_t fsubtype = (payload[0] >> 4) & 0x0F;
     uint8_t* addr1 = payload + 4;
@@ -383,6 +390,18 @@ static void hop_task(void*) {
     size_t i = 0;
     for (;;) {
         if (!s_enabled) { vTaskDelay(pdMS_TO_TICKS(1000)); continue; }  // charge mode: idle
+        if (focus_active()) {                                           // focus: park on the target's channel
+            uint8_t fc = focus_channel();
+            if (fc && fc != s_cur_ch) {
+                xSemaphoreTake(s_radio_mux, portMAX_DELAY);
+                esp_err_t fe = s_enabled ? esp_wifi_set_channel(fc, WIFI_SECOND_CHAN_NONE) : ESP_ERR_INVALID_STATE;
+                xSemaphoreGive(s_radio_mux);
+                if (fe == ESP_OK) s_cur_ch = fc;
+                else ESP_LOGW(TAG, "focus: channel %u refused (%s)", fc, esp_err_to_name(fe));
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+            continue;
+        }
         uint8_t ch = PLAN[i];
         xSemaphoreTake(s_radio_mux, portMAX_DELAY);
         esp_err_t e = s_enabled ? esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE) : ESP_ERR_INVALID_STATE;
@@ -440,6 +459,14 @@ static void radio_apply(bool on) {
         ESP_LOGW(TAG, "radio OFF (charge mode)");
     }
     xSemaphoreGive(s_radio_mux);
+}
+
+// Focus widens the capture to data-frame headers (peer / traffic tallies); ending it restores mgmt-only.
+void radio_wifi_set_data_filter(bool on) {
+    if (!s_enabled) return;
+    wifi_promiscuous_filter_t f = {};
+    f.filter_mask = on ? (WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA) : WIFI_PROMIS_FILTER_MASK_MGMT;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_wifi_set_promiscuous_filter(&f));
 }
 
 void radio_wifi_set_enabled(bool on) { radio_apply(on); }
