@@ -119,6 +119,10 @@
   wakes), optional CYD supply cut via boost EN (SS_BOOST_EN_GPIO, off until wired; C5 BOOT button
   wakes a user charge mode), C5 CPU 80 MHz + slower polling, 15 s heartbeat (C5 stale window 45 s).
   Verified in logs: 80 <-> 240 MHz switching, radio off, zero link timeouts. Current saving not measured.
+- **Backlight lesson (2026-10-19):** TFT_eSPI init() does pinMode(TFT_BL)+digitalWrite(HIGH), which
+  detaches GPIO21 from any LEDC channel set up BEFORE tft.init(). Brightness/dimming/screen-off did
+  nothing until the LEDC setup was moved to after tft.init() (status_ui_init). Anything that touches the
+  backlight must be set up after tft.init().
 - BLE is NOT scanning on the C5 yet (SCAN_BLE is canned): 2.4 GHz and 5 GHz are confirmed live.
 - Not ported yet: BLE (scan + tracker logic), Remote ID decode (beacon IE is flagged but not
   decoded, NAN skipped), scan scheduler + FOCUS_TARGET, GET_DEVICE_PROFILE, the CYD detection UI.

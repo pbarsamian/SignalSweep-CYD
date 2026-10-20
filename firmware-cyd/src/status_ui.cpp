@@ -16,10 +16,6 @@ uint8_t   g_backlight = 200;         // normal backlight PWM (settings page chan
 #define C_ACCENT TFT_CYAN
 
 void status_ui_init() {
-    ledcSetup(0, 5000, 8);
-    ledcAttachPin(PIN_TFT_BL, 0);
-    ledcWrite(0, g_backlight);
-
     tft.init();
     tft.setRotation(3);
     // Panel colour fix (confirmed on this board, MODE 2): MADCTL 0xE8 + inversion ON.
@@ -27,6 +23,13 @@ void status_ui_init() {
     tft.writedata(0xE8);
     tft.invertDisplay(true);
     tft.fillScreen(C_BG);
+
+    // Backlight PWM goes AFTER tft.init(): TFT_eSPI's init() does pinMode(TFT_BL) + digitalWrite(HIGH),
+    // which detaches the pin from any LEDC channel set up earlier (so dimming and screen-off silently
+    // did nothing). Attaching here takes the pin back.
+    ledcSetup(0, 5000, 8);
+    ledcAttachPin(PIN_TFT_BL, 0);
+    ledcWrite(0, g_backlight);
 
     tft.setTextDatum(MC_DATUM);
     tft.setTextColor(C_OK, C_BG);
