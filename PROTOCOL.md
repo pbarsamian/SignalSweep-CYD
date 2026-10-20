@@ -204,8 +204,8 @@ States (`ss_power_t`): `0 NORMAL`, `1 CHARGE_USER`, `2 CHARGE_FORCED`.
 
 **Power savings while charging.** Goal: keep the total draw below the C5 charger's fixed
 200 mA so the battery gains charge.
-1. **Display fully off.** The CYD switches the panel off (ILI9341 `SLPIN` + `DISPOFF`) and the
-   backlight to 0 after `SS_CHARGE_WAKE_MS` (8 s) in charge mode. The touch controller stays on:
+1. **Display fully off.** The CYD sets the backlight to 0 (the panel is deliberately not put into
+   sleep: ILI9341 sleep mode shows white on many boards) after `SS_CHARGE_WAKE_MS` (8 s) in charge mode. The touch controller stays on:
    the first tap only wakes the screen for 8 s (and refreshes the voltage); a second tap on the lit
    screen leaves a *user* charge mode, and is ignored in a forced one.
 2. **CYD supply cut (optional hardware).** If `SS_BOOST_EN_GPIO` is set and wired, the C5 drives

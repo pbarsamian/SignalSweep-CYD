@@ -181,23 +181,19 @@ void status_ui_draw_charge(const C5Status& c, uint32_t cut_left_s) {
     }
 }
 
-// Panel + backlight fully off (the biggest CYD load) and back on. The ILI9341 is put into
-// sleep (SLPIN) as well; its registers and frame memory survive, so a wake just repaints.
+// Screen off = backlight to zero. The ILI9341 itself is deliberately NOT put into sleep
+// (SLPIN/DISPOFF): the panel shows white in sleep mode on many boards, and the backlight is
+// where the power goes, so the sleep command would save almost nothing for that risk.
 static bool s_panel_on = true;
 void status_ui_screen_power(bool on) {
     if (on == s_panel_on) return;
     s_panel_on = on;
     if (on) {
-        tft.writecommand(0x11);                  // SLPOUT
-        delay(120);                              // the datasheet's settling time after SLPOUT
-        tft.writecommand(0x29);                  // DISPON
         memset(s_chg_last, 0, sizeof(s_chg_last));   // force a repaint of every line
         memset(s_chg_col, 0, sizeof(s_chg_col));
         tft.fillScreen(C_BG);
         ledcWrite(0, 25);
     } else {
         ledcWrite(0, 0);
-        tft.writecommand(0x28);                  // DISPOFF
-        tft.writecommand(0x10);                  // SLPIN
     }
 }
