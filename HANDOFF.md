@@ -168,7 +168,12 @@
   rule, strongest signal and summed weight as an optional record trailer (PROTOCOL.md 3b-3), written as the pcapng packet comment
   `Rule: <name> (strongest N, total M)`. Verified 2026-10-21 on hardware for BLE: 112 Tile adverts (41.8 s, 0 dropped), every one commented
   `RSSI .. dBm; Rule: Tile Tracker (strongest 80, total 80)`. The Wi-Fi path (comment on matched management frames) builds but is NOT yet
-  exercised on hardware (TELLO-TEST01 hotspot would do it). NOT yet: the 16 KB pre-trigger ring and alerts.csv (phase 3). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
+  exercised on hardware (TELLO-TEST01 hotspot would do it). Alert log (phase 3): SET > PRIVACY > "Alert log to SD card" (off at every
+  boot, not saved: the rows hold MACs of nearby devices) appends one row per alert event to /signalsweep/alerts.csv
+  (`boot_ms,type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,times_heard`, CRLF; boot_ms = ms since the CYD booted, no
+  clock; written by the same task as captures so the SD bus is never shared). Console key `d` prints the file over serial between
+  `[alerts] --- begin/end ---` markers. Verified 2026-10-21 on hardware: 53 rows (46 Apple Find My, 5 Tile, 2 Google), every row 12
+  columns, the dump's byte count matched the file size. NOT yet: the 16 KB pre-trigger ring (the last open item of #10). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
   LIST page (issue #14): two control bars (type chips; radio, ALERTS, sort, "N of M"), a filtered and sorted index of its own
   (`list_build` in ui.cpp; SCOPE keeps the unfiltered `visible_index`), its own scroll offset, a page-per-tap scroll strip whose track
   jumps proportionally. Filter and sort are session-only. 6 rows visible. All 8 on-device checks passed 2026-10-21.

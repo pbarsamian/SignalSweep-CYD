@@ -30,4 +30,7 @@ void        sdcap_tick(uint32_t now_ms);         // flush every couple of second
 SdCapState  sdcap_state(void);
 bool        sdcap_wanted(void);                  // true while recording: this is what SET_CONFIG {cap} carries
 const SdCapStats& sdcap_stats(void);
+struct Det;
+void        sdcap_dump_alerts(void);             // console test hook: print alerts.csv over serial
+void        sdcap_log_alert(const Det& d);       // append one alert row to /signalsweep/alerts.csv (caller checks the switch)
 const char* sdcap_last_msg(void);                // why the last capture ended, or an error

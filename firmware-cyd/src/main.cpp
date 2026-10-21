@@ -485,6 +485,7 @@ static void on_event(uint8_t kind, const uint8_t* cb, size_t n) {
         ss_cbor_get_bool(cb, n, "alert", &alert);
         bool ev_new = false, ev_alert = false;
         int slot = model_ingest_det(cb, n, &ev_new, &ev_alert);
+        if (slot >= 0 && ev_alert && g_ui_set.alertlog) sdcap_log_alert(g_model.dets[slot]);     // SET > PRIVACY, off at every boot
         if (slot >= 0 && ev_alert && !g_model.dets[slot].muted) ui_alert(g_model.dets[slot].type);
         if (ss_cbor_map_get(cb, n, "name", &name) && ss_cbor_map_get(cb, n, "rssi", &rssi) &&
             ss_cbor_map_get(cb, n, "band", &band) && ss_cbor_map_get(cb, n, "ch", &ch) &&
@@ -563,6 +564,7 @@ static void console() {
             break;
         }
         case 'm': { bool ok = sdcap_card_ok(); Serial.printf("[sd] %s (%s)\n", ok ? "mounted" : "not mounted", sdcap_card_text()); break; }   // test hook: SD card status
+        case 'd': sdcap_dump_alerts(); break;                      // test hook: print /signalsweep/alerts.csv
         case 'u': send_simple(0x7E); break;                        // unknown: expect ERR_OPCODE
         case 'x': {                                                // corrupt CRC: expect NACK ERR_CRC
             size_t n = g_link.build_req_frame(frame, sizeof(frame), SS_OP_GET_STATUS, nullptr, 0);

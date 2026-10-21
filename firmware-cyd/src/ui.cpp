@@ -1427,11 +1427,12 @@ static void draw_profile() {
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(C_LTGREY, C_BLACK);
     for (int i = 0; i < 8; i++) tft.drawString(T[i], 4, y + 46 + i * 11, 1);
+    draw_toggle(2, y + 136, SCREEN_W - 4, 30, "Alert log to SD card", g_ui_set.alertlog ? "alerts.csv, ON until reboot" : "alerts.csv: MAC, rule, RSSI", g_ui_set.alertlog);
 }
 
 static void draw_set(const UiCtx& c) {
     // Segmented control: ALERTS | DEVICE | PROFILE | ABOUT
-    static const char* const SEG[4] = { "ALERTS", "DEVICE", "PROFILE", "ABOUT" };
+    static const char* const SEG[4] = { "ALERTS", "DEVICE", "PRIVACY", "ABOUT" };
     for (int i = 0; i < 4; i++) {
         bool on = (s_set_page == i);
         int x = i * (SCREEN_W / 4);
@@ -1693,6 +1694,10 @@ void ui_touch(int tx, int ty) {
             if (in_rect(tx, ty, 2, DEV_Y0, SCREEN_W - 4, 38)) {
                 g_ui_set.opennet = !g_ui_set.opennet;
                 if (s_cb.settings_changed) s_cb.settings_changed();
+                s_dirty = true;
+            }
+            if (in_rect(tx, ty, 2, DEV_Y0 + 136, SCREEN_W - 4, 30)) {          // alert log (no C5 setting: the CYD writes it)
+                g_ui_set.alertlog = !g_ui_set.alertlog;
                 s_dirty = true;
             }
             return;

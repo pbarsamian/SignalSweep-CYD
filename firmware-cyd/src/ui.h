@@ -15,6 +15,7 @@ struct UiSettings {
     bool    led = true;
     uint8_t brightness = 200;                                // backlight PWM 25..255
     uint8_t sched = 1;                                       // scan balance preset (SCHED_PRESETS index)
+    bool    alertlog = false;                                // alerts.csv on the SD card (issue #10): NOT saved, always off after a reboot
     bool    opennet = false;                                 // open-network profiling (issue #11): NOT saved, always off after a reboot
 };
 extern UiSettings g_ui_set;

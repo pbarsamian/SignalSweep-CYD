@@ -326,3 +326,46 @@ void sdcap_tick(uint32_t now) {
         if (s_failed) finish(s_msg);
     }
 }
+
+// ---- alerts.csv: one row per alert (issue #10) -------------------------------------------------------------
+// Appended from the same task that writes captures, so the two never touch the card at once. The device has no
+// clock: boot_ms is milliseconds since this CYD booted. Switched on by SET > PRIVACY (off at every boot).
+void sdcap_log_alert(const Det& d) {
+    static const char* const TYPES[] = { "drone", "tracker", "camera", "bodycam", "attack", "unknown" };
+    if (!sdcap_card_ok()) return;
+    const char* path = "/signalsweep/alerts.csv";
+    bool fresh = !SD.exists(path);
+    File f = SD.open(path, FILE_APPEND);
+    if (!f) { s_mounted = false; return; }
+    if (fresh) f.print("boot_ms,type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,times_heard\r\n");
+    char name[40], ssid[40];
+    for (int k = 0; k < 2; k++) {                                    // CSV-safe: no commas, quotes or line breaks
+        const char* s = k == 0 ? d.name : d.ssid;
+        char* o = k == 0 ? name : ssid;
+        size_t j = 0;
+        for (; *s && j + 1 < 39; s++) o[j++] = (*s == ',' || *s == '"' || *s == '\r' || *s == '\n') ? '_' : *s;
+        o[j] = 0;
+    }
+    f.printf("%lu,%s,%u,%u,%s,%s,%s,%s,%u,%u,%d,%u\r\n", (unsigned long)millis(), TYPES[d.type <= 5 ? d.type : 5], d.conf, d.best,
+             d.mac, name, ssid, d.radio == 1 ? "ble" : d.radio == 2 ? "both" : "wifi", d.band, d.ch, (int)d.rssi, d.seen);
+    f.close();
+}
+
+// Console test hook ('a'): print alerts.csv over serial between marker lines, so it can be read without pulling the card.
+void sdcap_dump_alerts(void) {
+    if (!sdcap_card_ok()) { Serial.printf("[alerts] no card (%s)\n", sdcap_card_text()); return; }
+    File f = SD.open("/signalsweep/alerts.csv", FILE_READ);
+    if (!f) { Serial.println("[alerts] no alerts.csv yet"); return; }
+    Serial.printf("[alerts] --- begin (%lu bytes) ---\n", (unsigned long)f.size());
+    uint8_t buf[128];
+    size_t total = 0;
+    while (f.available() && total < 65536) {
+        size_t n = f.read(buf, sizeof(buf));
+        if (!n) break;
+        Serial.write(buf, n);
+        total += n;
+        delay(1);                                                    // let the UART drain
+    }
+    f.close();
+    Serial.println("\n[alerts] --- end ---");
+}
