@@ -1220,7 +1220,7 @@ static void cap_line(int y, uint16_t col, const char* fmt, ...) {          // on
 
 static void draw_cap_page(const Det& d, bool gone) {
     SdCapState st = sdcap_state();
-    bool wifi_focus = !gone && fv_for(d) && g_fv.wifi;
+    bool focused = !gone && fv_for(d);
     bool ok = (st != SDC_IDLE) ? true : sdcap_card_ok();                     // re-checks every 3 s while no card is in
     int y = DLIST_Y + 2;
     char cb[40];
@@ -1233,8 +1233,7 @@ static void draw_cap_page(const Det& d, bool gone) {
     uint16_t col;
     if (st == SDC_REC) { label = "STOP"; col = C_ATTACK; }
     else if (st == SDC_STOPPING) { label = "saving..."; col = C_MDGREY; }
-    else if (d.radio == 1) { label = "REC (Wi-Fi targets only for now)"; col = C_MDGREY; }
-    else if (!wifi_focus) { label = "Focus a Wi-Fi target first"; col = C_MDGREY; }
+    else if (!focused) { label = "Focus a target first"; col = C_MDGREY; }
     else { label = "REC"; col = C_SIGNAL; }
     draw_button(10, CAP_BTN_Y, SCREEN_W - 20, 34, label, col);
     const SdCapStats& s = sdcap_stats();
@@ -1248,8 +1247,13 @@ static void draw_cap_page(const Det& d, bool gone) {
         cap_line(ly + 13, C_BLACK, "");
     }
     cap_line(ly + 26, sdcap_last_msg()[0] ? C_LTGREY : C_BLACK, "%s", sdcap_last_msg());
-    cap_line(ly + 39, C_MDGREY, "Passive. Data frames are cut to their header:");
-    cap_line(ly + 51, C_MDGREY, "no payloads. Open the .pcapng in Wireshark.");
+    if (d.radio == 1) {
+        cap_line(ly + 39, C_MDGREY, "Passive. BLE adverts only: no scan responses,");
+        cap_line(ly + 51, C_MDGREY, "channel or CRC. Open the .pcapng in Wireshark.");
+    } else {
+        cap_line(ly + 39, C_MDGREY, "Passive. Data frames are cut to their header:");
+        cap_line(ly + 51, C_MDGREY, "no payloads. Open the .pcapng in Wireshark.");
+    }
 }
 
 static void cap_toggle() {
@@ -1262,9 +1266,8 @@ static void cap_toggle() {
         return;
     }
     if (sdcap_state() != SDC_IDLE) return;
-    if (d.radio == 1) { toast("BLE capture is not built yet"); return; }
-    if (s_sel_gone || !fv_for(d) || !g_fv.wifi) { toast("Focus a Wi-Fi target first"); return; }
-    if (!sdcap_start(d.mac, d.ssid[0] ? d.ssid : d.name, g_fv.ch)) { toast(sdcap_last_msg()); s_dirty = true; return; }
+    if (s_sel_gone || !fv_for(d)) { toast("Focus a target first"); return; }
+    if (!sdcap_start(d.mac, d.ssid[0] ? d.ssid : d.name, g_fv.ch, !g_fv.wifi)) { toast(sdcap_last_msg()); s_dirty = true; return; }
     if (s_cb.settings_changed) s_cb.settings_changed();                   // sends cap=true
     s_dirty = true;
 }

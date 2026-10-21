@@ -215,13 +215,17 @@ focus restores the mgmt-only filter, the channel hop and the normal BLE scan dut
 n}`; `age_ms` 99999 means the target has not been heard yet. The CYD's HUNT page runs on these.
 
 **Frame capture** (issue #10, PASSIVE). `SET_CONFIG {cap: bool}`, reset to off on every HELLO and ended by the focus ending, a
-retarget, or `cap:false`. It only takes effect during a Wi-Fi focus. While on, every frame to or from the focused MAC (any of addr1,
-addr2, addr3) is queued on the C5 (8 KB ring) and streamed to the CYD as `SS_EVT_CAPTURE` (event kind 5) events, metered to about
+retarget, or `cap:false`. It only takes effect during a focus. While on, every frame to or from the focused Wi-Fi MAC (any of addr1,
+addr2, addr3), or every advert from the focused BLE MAC, is queued on the C5 (8 KB ring) and streamed to the CYD as `SS_EVT_CAPTURE` (event kind 5) events, metered to about
 8 KB/s so the link keeps room for everything else. Data frames are cut to their 802.11 header at the source (never the LLC, IP or
 anything above, so no payloads and no EAPOL handshakes); management frames are kept whole up to 400 bytes. Event body (CBOR):
 `{a: capture still on, e: this is the last event of the capture, d: records dropped so far (queue full), r: bytes}` where `r` packs
-whole records back to back, little-endian: `u32 t_ms, u8 ch, s8 rssi, u8 kind (0 mgmt, 1 data), u8 flags (bit 0 truncated),
-u16 caplen, u16 origlen (without the FCS), u8 data[caplen]`. After `cap:false` or the end of the focus the C5 drains its queue and
+whole records back to back, little-endian: `u32 t_ms, u8 ch, s8 rssi, u8 kind (0 mgmt, 1 data, 2 BLE advert), u8 flags (bit 0 truncated; kind 2: bit 1 TxAdd,
+bit 2 RxAdd, bits 4..7 link-layer PDU type), u16 caplen, u16 origlen (without the FCS), u8 data[caplen]`. For kind 2, `ch` is 0 (the
+scan does not report the advertising channel) and `data` is AdvA (6 bytes, over-the-air order), then InitA (6 bytes) for ADV_DIRECT_IND only,
+then the advertising data (<= 31 bytes). The CYD rebuilds each advert as a link-layer packet (LINKTYPE_BLUETOOTH_LE_LL 251: access address
+0x8E89BED6, header, AdvA and data, CRC = zeros because it is unknown) with the RSSI in the packet comment. A passive scan never receives scan
+responses, so none are captured. After `cap:false` or the end of the focus the C5 drains its queue and
 sends one final event with `e:true`. Code: `firmware-c5/main/capture.*` and `firmware-cyd/src/sdcap.*`. The CYD writes a pcapng
 (radiotap, linktype 127, microsecond timestamps relative to the first frame) to `/signalsweep/cap_NNN.pcapng` with a `.txt` sidecar.
 

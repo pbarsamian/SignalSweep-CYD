@@ -31,6 +31,7 @@ static bool       s_have_t0 = false;
 static uint32_t   s_last_flush = 0, s_stop_ms = 0;
 static char       s_mac[18] = {}, s_label[33] = {};
 static uint8_t    s_ch = 0;
+static bool       s_ble = false;
 static bool       s_failed = false;
 
 SdCapState sdcap_state(void) { return s_state; }
@@ -87,9 +88,12 @@ static size_t opt_size(size_t len) { return 4 + ((len + 3) & ~(size_t)3); }
 static void opt_str(uint16_t code, const char* s) { size_t l = strlen(s); p16(code); p16((uint16_t)l); put(s, l); pad4(l); }
 
 static void write_headers(const char* desc) {
+    const char* ifname = s_ble ? "ble-focus" : "wlan-focus";
     char app[56];
     snprintf(app, sizeof(app), "SignalSweep CYD %s", FW_VERSION);
-    const char* cmt = "Timestamps are microseconds since the first frame; the device has no clock. Passive capture.";
+    const char* cmt = s_ble
+        ? "Timestamps are microseconds since the first advert; the device has no clock. Passive scan: adverts only, rebuilt as link-layer packets; the CRC is not known (zeros) and no scan responses are heard."
+        : "Timestamps are microseconds since the first frame; the device has no clock. Passive capture.";
     // Section Header Block
     uint32_t shb = 32 + (uint32_t)(opt_size(strlen(app)) + opt_size(strlen(cmt)));
     p32(0x0A0D0D0A); p32(shb); p32(0x1A2B3C4D); p16(1); p16(0);
@@ -98,10 +102,10 @@ static void write_headers(const char* desc) {
     opt_str(1, cmt);                                               // opt_comment
     p16(0); p16(0);                                                // opt_endofopt
     p32(shb);
-    // Interface Description Block: linktype 127 = 802.11 with a radiotap header
-    uint32_t idb = 24 + (uint32_t)(opt_size(strlen("wlan-focus")) + opt_size(strlen(desc)) + 8);
-    p32(1); p32(idb); p16(127); p16(0); p32(0);                    // snaplen 0 = no limit
-    opt_str(2, "wlan-focus");                                      // if_name
+    // Interface Description Block: linktype 127 = 802.11 with a radiotap header, 251 = BLE link-layer packets
+    uint32_t idb = 24 + (uint32_t)(opt_size(strlen(ifname)) + opt_size(strlen(desc)) + 8);
+    p32(1); p32(idb); p16(s_ble ? 251 : 127); p16(0); p32(0);      // snaplen 0 = no limit
+    opt_str(2, ifname);                                            // if_name
     opt_str(3, desc);                                              // if_description
     p16(9); p16(1); { uint8_t v[4] = {6, 0, 0, 0}; put(v, 4); }    // if_tsresol = 10^-6 s
     p16(0); p16(0);
@@ -123,6 +127,30 @@ static void write_epb(uint32_t t_ms, uint8_t ch, int8_t rssi, const uint8_t* fr,
     put(rt, sizeof(rt));
     put(fr, caplen);
     pad4(cap);
+    p32(total);
+    s_st.frames++;
+}
+
+// One BLE advert as a link-layer packet (linktype 251): access address, header, AdvA [InitA] data, CRC.
+// The scan reports adverts, not packets, so the header is rebuilt from the report and the CRC is zeros.
+// rec_flags: bit 1 TxAdd, bit 2 RxAdd, bits 4..7 PDU type (see firmware-c5/main/capture.h).
+static void write_ble_epb(uint32_t t_ms, int8_t rssi, uint8_t rec_flags, const uint8_t* body, uint16_t blen) {
+    if (!s_have_t0) { s_have_t0 = true; s_t0 = t_ms; }
+    uint64_t us = (uint64_t)(uint32_t)(t_ms - s_t0) * 1000ULL;
+    uint8_t pdu[4 + 2 + 43 + 3] = { 0xD6, 0xBE, 0x89, 0x8E };            // advertising access address 0x8E89BED6, LSB first
+    if (blen > 43) blen = 43;
+    pdu[4] = (uint8_t)((rec_flags >> 4) | ((rec_flags & 2) ? 0x40 : 0) | ((rec_flags & 4) ? 0x80 : 0));
+    pdu[5] = (uint8_t)blen;
+    memcpy(pdu + 6, body, blen);
+    uint32_t cap = 6 + blen + 3;                                         // the 3 CRC bytes stay zero
+    char cm[24];
+    snprintf(cm, sizeof(cm), "RSSI %d dBm", (int)rssi);
+    uint32_t total = 32 + ((cap + 3) & ~3u) + (uint32_t)opt_size(strlen(cm)) + 4;
+    p32(6); p32(total); p32(0); p32((uint32_t)(us >> 32)); p32((uint32_t)us); p32(cap); p32(cap);
+    put(pdu, cap);
+    pad4(cap);
+    opt_str(1, cm);                                                      // opt_comment: the scan's RSSI
+    p16(0); p16(0);                                                      // opt_endofopt
     p32(total);
     s_st.frames++;
 }
@@ -155,9 +183,19 @@ static void write_sidecar(void) {
     lower_mac(lm, s_mac);
     t.printf("SignalSweep CYD capture %s\r\n\r\n", s_st.file);
     t.printf("Target:   %s  %s\r\n", s_mac, s_label);
-    t.printf("Channel:  %u (%s)\r\n", s_ch, s_ch >= 36 ? "5 GHz" : "2.4 GHz");
+    if (s_ble) t.printf("Radio:    BLE (the scan does not report the advertising channel)\r\n");
+    else t.printf("Channel:  %u (%s)\r\n", s_ch, s_ch >= 36 ? "5 GHz" : "2.4 GHz");
     t.printf("Frames:   %lu written, %lu dropped by the C5 (its queue was full)\r\n", (unsigned long)s_st.frames, (unsigned long)s_st.dropped);
     t.printf("Firmware: CYD %s\r\n\r\n", FW_VERSION);
+    if (s_ble) {
+        t.printf("Timestamps are microseconds since the first advert: the device has no clock.\r\n");
+        t.printf("Passive scan: only the target's adverts are here, rebuilt as link-layer packets (header from the scan report,\r\n");
+        t.printf("access address 0x8E89BED6). The CRC is zeros, so Wireshark shows it as unverified. A passive scan never\r\n");
+        t.printf("receives scan responses. Each packet's comment holds the RSSI the C5 measured.\r\n\r\n");
+        t.printf("Wireshark display filter (adverts from the target):\r\n  btle.advertising_address == %s\r\n", lm);
+        t.close();
+        return;
+    }
     t.printf("Timestamps are microseconds since the first frame: the device has no clock.\r\n");
     t.printf("Data frames are cut to the 802.11 header: no payloads, no handshakes. Management frames are whole.\r\n\r\n");
     t.printf("Wireshark display filter (frames to or from the target):\r\n  wlan.addr == %s\r\n\r\n", lm);
@@ -192,7 +230,7 @@ static void finish(const char* msg) {
                   (unsigned long)s_st.bytes, (unsigned long)s_st.dropped);
 }
 
-bool sdcap_start(const char* mac, const char* label, uint8_t ch) {
+bool sdcap_start(const char* mac, const char* label, uint8_t ch, bool ble) {
     if (s_state != SDC_IDLE) return false;
     if (!sdcap_card_ok()) { snprintf(s_msg, sizeof(s_msg), "no SD card"); return false; }
     int n = 1;
@@ -210,9 +248,11 @@ bool sdcap_start(const char* mac, const char* label, uint8_t ch) {
     snprintf(s_mac, sizeof(s_mac), "%s", mac);
     snprintf(s_label, sizeof(s_label), "%s", label ? label : "");
     s_ch = ch;
+    s_ble = ble;
     s_sl = 0; s_failed = false; s_have_t0 = false; s_msg[0] = 0;
     char desc[64];
-    snprintf(desc, sizeof(desc), "802.11 frames to or from %s on channel %u", s_mac, ch);
+    if (ble) snprintf(desc, sizeof(desc), "BLE adverts from %s", s_mac);
+    else snprintf(desc, sizeof(desc), "802.11 frames to or from %s on channel %u", s_mac, ch);
     write_headers(desc);
     s_state = SDC_REC;
     s_last_flush = millis();
@@ -244,7 +284,10 @@ void sdcap_event(const uint8_t* cb, size_t n) {
             uint32_t t = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
             uint16_t caplen = (uint16_t)(p[8] | (p[9] << 8)), origlen = (uint16_t)(p[10] | (p[11] << 8));
             if (CAP_REC_HDR + (size_t)caplen > left) break;
-            if (!s_failed) write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen);
+            if (!s_failed) {
+                if (p[6] == 2) { if (s_ble) write_ble_epb(t, (int8_t)p[5], p[7], p + CAP_REC_HDR, caplen); }
+                else if (!s_ble) write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen);
+            }
             p += CAP_REC_HDR + caplen;
             left -= CAP_REC_HDR + caplen;
         }

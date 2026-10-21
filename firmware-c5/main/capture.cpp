@@ -38,7 +38,7 @@ bool capture_enabled(void) { return s_en; }
 
 void capture_set_enabled(bool on) {
     if (on) {
-        if (s_en || !focus_is_wifi()) return;            // a capture needs a Wi-Fi focus to say whose frames
+        if (s_en || !focus_active()) return;             // a capture needs a focus to say whose frames
         portENTER_CRITICAL(&s_mux);
         reset_locked();
         s_dropped = 0;
@@ -77,7 +77,7 @@ static int data_hdr_len(const uint8_t* f) {
 }
 
 void capture_note(const uint8_t* f, int length, int rssi, int ch, bool is_mgmt) {
-    if (!s_en || length < 28) return;
+    if (!s_en || length < 28 || !focus_is_wifi()) return;     // a BLE focus must not pick up a Wi-Fi frame that shares its MAC
     if (!focus_matches(f + 4) && !focus_matches(f + 10) && !focus_matches(f + 16)) return;   // the focused target's frames only
     int orig = length - 4;                                // without the FCS
     int cap = orig;
@@ -102,6 +102,36 @@ void capture_note(const uint8_t* f, int length, int rssi, int ch, bool is_mgmt) 
     if (s_en && (size_t)(CAP_REC_HDR + cap) <= RING_SZ - s_used) {
         ring_put(hdr, CAP_REC_HDR);
         ring_put(f, (size_t)cap);
+    } else {
+        s_dropped++;
+    }
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void capture_note_ble(const uint8_t mac[6], uint8_t addr_type, uint8_t evtype, int rssi, const uint8_t* data,
+                      size_t len, const uint8_t direct_a[6], uint8_t direct_type) {
+    if (!s_en || !focus_is_ble() || !focus_matches(mac) || evtype > 4) return;
+    static const uint8_t pdu_of[5] = { 0, 1, 6, 2, 4 };   // NimBLE event type -> link-layer PDU type
+    bool direct = evtype == 1;
+    if (len > 31) len = 31;                              // legacy advertising data limit
+    uint8_t body[12 + 31];
+    size_t n = 0;
+    for (int i = 0; i < 6; i++) body[n++] = mac[5 - i];  // AdvA, over-the-air order
+    if (direct) { memcpy(body + n, direct_a, 6); n += 6; len = 0; }
+    if (len) { memcpy(body + n, data, len); n += len; }
+    uint8_t hdr[CAP_REC_HDR];
+    uint32_t t = ms_now();
+    hdr[0] = (uint8_t)t; hdr[1] = (uint8_t)(t >> 8); hdr[2] = (uint8_t)(t >> 16); hdr[3] = (uint8_t)(t >> 24);
+    hdr[4] = 0;                                          // the scan does not report the advertising channel
+    hdr[5] = (uint8_t)(int8_t)(rssi < -127 ? -127 : rssi > 127 ? 127 : rssi);
+    hdr[6] = 2;
+    hdr[7] = (uint8_t)(((addr_type & 1) ? 2 : 0) | ((direct && (direct_type & 1)) ? 4 : 0) | (pdu_of[evtype] << 4));
+    hdr[8] = (uint8_t)n; hdr[9] = (uint8_t)(n >> 8);
+    hdr[10] = (uint8_t)n; hdr[11] = (uint8_t)(n >> 8);
+    portENTER_CRITICAL(&s_mux);
+    if (s_en && CAP_REC_HDR + n <= RING_SZ - s_used) {
+        ring_put(hdr, CAP_REC_HDR);
+        ring_put(body, n);
     } else {
         s_dropped++;
     }

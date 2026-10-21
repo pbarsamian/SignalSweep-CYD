@@ -21,6 +21,7 @@
 #include "signatures.h"
 #include "odid_util.h"
 #include "focus.h"
+#include "capture.h"
 
 static const char* TAG = "ble";
 
@@ -310,6 +311,8 @@ static void on_advert(const struct ble_gap_disc_desc* disc) {
     parse_adv(disc->data, disc->length_data, a);
     dev_note(a);
     focus_note_ble(a.mac, disc->rssi, disc->data, disc->length_data);   // no-op unless focused on this device
+    capture_note_ble(a.mac, disc->addr.type, disc->event_type, disc->rssi, disc->data, disc->length_data,
+                     disc->direct_addr.val, disc->direct_addr.type);   // no-op unless capturing this device
 
     int confidence = 0, best = 0;
     const char* rule = nullptr;

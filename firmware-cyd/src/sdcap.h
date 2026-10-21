@@ -22,7 +22,7 @@ struct SdCapStats {
 
 bool        sdcap_card_ok(void);                 // mounts on first use; false if there is no usable card
 const char* sdcap_card_text(void);               // "ready 3.7 GB", "no card", ...
-bool        sdcap_start(const char* mac, const char* label, uint8_t ch);   // open the file, begin recording
+bool        sdcap_start(const char* mac, const char* label, uint8_t ch, bool ble);   // open the file, begin recording
 void        sdcap_stop(const char* why);         // ask for the end: the C5 drains, then the file closes
 void        sdcap_abort(const char* why);        // close now (link reset)
 void        sdcap_event(const uint8_t* cbor, size_t n);   // an SS_EVT_CAPTURE payload (after the kind byte)
