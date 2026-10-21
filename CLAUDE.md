@@ -11,8 +11,10 @@
 `main` is the **split architecture**: `shared/` (frozen contract, compiled into both
 firmwares), `firmware-cyd/` (control plane + HMI, PlatformIO/Arduino), `firmware-c5/`
 (the radio, ESP-IDF >= 5.5, target esp32c5). Read `BUILD_MANIFEST.md` (scope boundary
-in section 0 is non-negotiable), `PROTOCOL.md`, then `BRINGUP.md`. Milestone status:
-**M1 + M2 are written and compile; neither has run on hardware yet.**
+in section 0 is non-negotiable), `PROTOCOL.md`, then `BRINGUP.md`. Status: M1 to M3 and the
+features built since (focus and hunt, the scan scheduler, the vendor database, open-network profiling, LIST filtering,
+the About page) run on hardware; M4/M6 (consent flow, tokens, BLE interrogation) and M5 (MCP server) are not built.
+The backlog is GitHub Issues; `HANDOFF.md` records what is verified. The user-facing overview is `README.md`.
 
 The standalone single-board firmware (v3.21 and earlier, everything described in the
 sections below) lives on the **`standalone` branch** / tag `standalone-v3.21`, and its
