@@ -9,6 +9,7 @@
 #include "model.h"
 #include "mode.h"
 #include "vendor.h"
+#include "about_credits.h"     // generated from CREDITS.md by about_pre.py
 #include <stdarg.h>
 
 extern TFT_eSPI tft;                 // owned by status_ui.cpp
@@ -32,7 +33,10 @@ static int      s_tab = TAB_SCOPE;
 static bool     s_dirty = true;          // the page needs a full repaint
 static bool     s_hdr_dirty = true;
 static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
-static int      s_set_page = 0;          // 0 alerts, 1 device
+static int      s_set_page = 0;          // 0 alerts, 1 device, 2 about
+#ifndef FW_VERSION
+#define FW_VERSION "unknown"
+#endif
 static int      s_scroll = 0;            // LIST / INFO scroll offset
 static int      s_sub = 0;               // INFO sub-page: 0 INFO, 1 LINKS, 2 TRAFF, 3 RAW, 4 HUNT
 #define SC_AUTO 3                         // scope follows what the C5 is scanning
@@ -1213,16 +1217,45 @@ static void draw_button(int x, int y, int w, int h, const char* label, uint16_t 
 #define DEV_Y0   (PAGE_Y + SET_SEG_H + 6)
 #define DEV_ROW  38
 
+// ABOUT: project URL, credits (from CREDITS.md) and the firmware versions. Every line is drawn with an opaque
+// background, so the periodic redraw is flicker-free; the C5 line follows the link.
+static void draw_about(const UiCtx& c) {
+    int y = DEV_Y0 - 2;
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(C_ACCENT, C_BLACK);
+    tft.drawString("SignalSweep CYD", 4, y, 2);
+    y += 18;
+    tft.setTextColor(C_WHITE, C_BLACK);
+    tft.drawString("github.com/pbarsamian/SignalSweep-CYD", 4, y, 1);
+    y += 14;
+    tft.setTextColor(C_LTGREY, C_BLACK);
+    for (int i = 0; i < ABOUT_CREDITS_N; i++, y += 10) tft.drawString(ABOUT_CREDITS[i], 4, y, 1);
+    y += 6;
+    char b[48];
+    tft.fillRect(0, y, SCREEN_W, 34, C_BLACK);
+    tft.setTextColor(C_WHITE, C_BLACK);
+    snprintf(b, sizeof(b), "CYD firmware   %s", FW_VERSION);
+    tft.drawString(b, 4, y, 1);
+    snprintf(b, sizeof(b), "C5 firmware    %s", c.c5->link_up && c.c5->fw[0] ? c.c5->fw : "not linked");
+    tft.setTextColor(c.c5->link_up ? C_WHITE : C_MDGREY, C_BLACK);
+    tft.drawString(b, 4, y + 11, 1);
+    snprintf(b, sizeof(b), "Protocol       %u", (unsigned)SS_PROTO_VERSION);
+    tft.setTextColor(C_WHITE, C_BLACK);
+    tft.drawString(b, 4, y + 22, 1);
+}
+
 static void draw_set(const UiCtx& c) {
-    // Segmented control: ALERTS | DEVICE
-    for (int i = 0; i < 2; i++) {
+    // Segmented control: ALERTS | DEVICE | ABOUT
+    static const char* const SEG[3] = { "ALERTS", "DEVICE", "ABOUT" };
+    for (int i = 0; i < 3; i++) {
         bool on = (s_set_page == i);
-        int x = i * (SCREEN_W / 2);
-        tft.fillRect(x, PAGE_Y, SCREEN_W / 2 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
+        int x = i * (SCREEN_W / 3);
+        tft.fillRect(x, PAGE_Y, SCREEN_W / 3 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
         tft.setTextColor(on ? C_BLACK : C_LTGREY, on ? C_ACCENT : C_PANEL);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString(i == 0 ? "ALERTS" : "DEVICE", x + SCREEN_W / 4, PAGE_Y + SET_SEG_H / 2 - 1, 1);
+        tft.drawString(SEG[i], x + SCREEN_W / 6, PAGE_Y + SET_SEG_H / 2 - 1, 1);
     }
+    if (s_set_page == 2) { draw_about(c); return; }
     if (s_set_page == 0) {
         for (int i = 0; i < 7; i++) {
             int col = (i < 4) ? 0 : 1, row = (i < 4) ? i : (i - 4);
@@ -1264,7 +1297,7 @@ static void draw_set(const UiCtx& c) {
     draw_button(6, y, SCREEN_W - 12, 30, "DIAGNOSTICS", C_LTGREY);
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("SignalSweep split M3a  GPL-3.0  based on B0z0dcl0wn/SignalSweep", 4, TAB_Y - 8, 1);
+    { char f[64]; snprintf(f, sizeof(f), "SignalSweep CYD %s  GPL-3.0  based on B0z0dcl0wn/SignalSweep", FW_VERSION); tft.drawString(f, 4, TAB_Y - 8, 1); }
 }
 
 // ---- update / touch ----------------------------------------------------------------------------
@@ -1416,7 +1449,8 @@ void ui_touch(int tx, int ty) {
     }
     if (s_tab == TAB_SET) {
         if (ty < PAGE_Y + SET_SEG_H) {
-            int p = tx / (SCREEN_W / 2);
+            int p = tx / (SCREEN_W / 3);
+            if (p > 2) p = 2;
             if (p != s_set_page) { s_set_page = p; s_dirty = true; }
             return;
         }

@@ -24,9 +24,10 @@
 #include "detections_api.h"
 #include "odid_selftest.h"
 #include "power.h"
+#include "esp_app_desc.h"
 
 static const char* TAG = "dispatch";
-#define FW_NAME "c5-m3c"
+#define FW_NAME (esp_app_get_description()->version)   // the git revision, from PROJECT_VER in CMakeLists.txt
 
 static struct {
     bool      valid;                              // a HELLO has established this shadow

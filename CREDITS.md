@@ -28,6 +28,21 @@ original author first.
 - **witnessmenow / ESP32-Cheap-Yellow-Display** — board docs and the "CYD" name.
 - **skizzophrenic / SquachWatch-CYD** — related detector for the same board.
 
+## On-device credits (the CYD About page shows these lines)
+<!-- about:begin -->
+```
+SignalSweep by B0z0dcl0wn (GPL-3.0)
+github.com/B0z0dcl0wn/SignalSweep
+Flock OUI set: OrdoOuroborous / NitekryDPaul
+DJI DroneID IE layout: Kismet project
+OpenDroneID core (Apache-2.0)
+CYD board docs: witnessmenow
+SquachWatch-CYD: skizzophrenic
+User_Setup.h: Rui Santos
+Names: IEEE RA registries, Bluetooth SIG
+```
+<!-- about:end -->
+
 ## This port
 - Touch UI, focus mode, device profiling, vendor DB, and additional
   2.4 GHz fingerprints: pbarsamian, with Claude (Anthropic) assisting.
