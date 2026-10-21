@@ -155,6 +155,9 @@
   tappable rows that open and focus the AP. Wire details in PROTOCOL.md section 3b-3. Verified on hardware: BLE focus (advert
   payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
   Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, (vendor names for peers now done, see Vendor database).
+  LIST page (issue #14): two control bars (type chips; radio, ALERTS, sort, "N of M"), a filtered and sorted index of its own
+  (`list_build` in ui.cpp; SCOPE keeps the unfiltered `visible_index`), its own scroll offset, a page-per-tap scroll strip whose track
+  jumps proportionally. Filter and sort are session-only. 6 rows visible. All 8 on-device checks passed 2026-10-21.
   Open-network profiling (issue #11): SET > PROFILE switch (off at every boot, C5 also resets it on HELLO); when on, a Wi-Fi focus
   reads unencrypted data frames only for DHCP hostname/vendor class, mDNS responses and SSDP NOTIFY SERVER plus port tallies (see PROTOCOL.md
   3b-3). Shown on INFO of the device and in the TRAFF page. Code: firmware-c5/main/opennet.*. Verified 2026-10-20 on an open Android hotspot (GalaxyS22, ch11) with a second phone: DHCP hostname and

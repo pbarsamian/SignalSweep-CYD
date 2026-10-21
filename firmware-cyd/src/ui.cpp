@@ -37,7 +37,14 @@ static int      s_set_page = 0;          // 0 alerts, 1 device, 2 profile (open-
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
 #endif
-static int      s_scroll = 0;            // LIST / INFO scroll offset
+static int      s_scroll = 0;            // INFO scroll offset
+// LIST page (issue #14): its own scroll offset, filter and sort. They live for the session (not saved) and survive tab changes
+// and a trip to INFO, so going back lands on the same place in the same filtered list.
+static int      s_list_scroll = 0;
+static uint8_t  s_lf_type = 0;           // 0 all, else T_* + 1
+static uint8_t  s_lf_radio = 0;          // 0 Wi-Fi + BLE, 1 Wi-Fi, 2 BLE
+static bool     s_lf_alerts = false;     // only detections at the alert threshold
+static uint8_t  s_lsort = 0;             // 0 strongest, 1 newest, 2 confidence
 static int      s_sub = 0;               // INFO sub-page: 0 INFO, 1 LINKS, 2 TRAFF, 3 RAW, 4 HUNT
 #define SC_AUTO 3                         // scope follows what the C5 is scanning
 static int      s_scope_pref = SC_AUTO;  // what the band button selects: 2, 5, 0 or SC_AUTO
@@ -235,6 +242,41 @@ static int visible_index(int nth) {          // the nth visible detection's slot
         seen++;
     }
     return -1;
+}
+
+// ---- LIST: filtered and sorted view of the detections (SCOPE keeps using visible_index above) -----
+#define LIST_BAR_H   38                              // two control bars: type chips, then radio / alerts / sort / count
+#define LIST_TOP     (PAGE_Y + LIST_BAR_H)
+#define LIST_ROWS    ((PAGE_H - LIST_BAR_H) / ROW_H)
+#define LIST_CHIP_W  51
+static uint8_t s_lidx[MODEL_MAX_DETS];               // the last built list: slots into g_model.dets, in display order
+static int     s_ln = 0;
+
+static bool list_pass(const Det& d) {
+    if (!d.used || d.type == T_UNKNOWN) return false;
+    if (s_lf_type && d.type != s_lf_type - 1) return false;
+    if (s_lf_radio == 1 && d.radio == 1) return false;           // Wi-Fi only: drop BLE-only
+    if (s_lf_radio == 2 && d.radio == 0) return false;           // BLE only: drop Wi-Fi-only
+    if (s_lf_alerts && d.best < CONF_ALERT_MIN) return false;
+    return true;
+}
+
+static bool list_before(const Det& a, const Det& b) {         // should a come first?
+    switch (s_lsort) {
+        case 1:  return (int32_t)(a.last_ms - b.last_ms) > 0;     // newest
+        case 2:  return a.conf != b.conf ? a.conf > b.conf : a.rssi > b.rssi;
+        default: return a.rssi / 3 > b.rssi / 3;                   // strongest, in 3 dB steps so a jittering RSSI does not shuffle rows
+    }
+}
+
+static void list_build() {
+    s_ln = 0;
+    for (int i = 0; i < g_model.ndets; i++) {
+        if (!list_pass(g_model.dets[i])) continue;
+        int k = s_ln++;
+        while (k > 0 && list_before(g_model.dets[i], g_model.dets[s_lidx[k - 1]])) { s_lidx[k] = s_lidx[k - 1]; k--; }   // stable insertion
+        s_lidx[k] = (uint8_t)i;
+    }
 }
 
 static int rssi_bars(int rssi) { return rssi >= -60 ? 5 : rssi >= -70 ? 4 : rssi >= -80 ? 3 : rssi >= -90 ? 2 : 1; }
@@ -532,38 +574,59 @@ static void draw_scope() {
 }
 
 // ---- LIST ------------------------------------------------------------------------------------
-static void draw_scroll_strip14(int total) {
+static void draw_scroll_strip14(int total, int scroll, int vis) {
     tft.fillRect(SCREEN_W - 14, PAGE_Y, 14, PAGE_H, C_BLACK);
     tft.drawFastVLine(SCREEN_W - 14, PAGE_Y, PAGE_H, C_BORDER);
-    uint16_t uc = (s_scroll > 0) ? C_ACCENT : C_BORDER;
+    uint16_t uc = (scroll > 0) ? C_ACCENT : C_BORDER;
     tft.fillTriangle(SCREEN_W - 7, PAGE_Y + 8, SCREEN_W - 13, PAGE_Y + 20, SCREEN_W - 1, PAGE_Y + 20, uc);
-    uint16_t dc = (s_scroll + ROWS_VIS < total) ? C_ACCENT : C_BORDER;
+    uint16_t dc = (scroll + vis < total) ? C_ACCENT : C_BORDER;
     tft.fillTriangle(SCREEN_W - 7, TAB_Y - 22, SCREEN_W - 13, TAB_Y - 34, SCREEN_W - 1, TAB_Y - 34, dc);
-    if (total > ROWS_VIS) {
-        int track_h = PAGE_H - 48;
-        int thumb_h = max(12, track_h * ROWS_VIS / total);
-        int thumb_y = PAGE_Y + 24 + (s_scroll * (track_h - thumb_h)) / max(1, total - ROWS_VIS);
+    if (total > vis) {
+        int track_h = PAGE_H - 60;                                   // between the two arrows
+        int thumb_h = max(12, track_h * vis / total);
+        int thumb_y = PAGE_Y + 24 + (scroll * (track_h - thumb_h)) / max(1, total - vis);
         tft.fillRect(SCREEN_W - 12, thumb_y, 10, thumb_h, C_DKGREY);
     }
 }
 
-static void draw_list() {
-    int total = model_visible_count();
-    int maxs = max(0, total - ROWS_VIS);
-    if (s_scroll > maxs) s_scroll = maxs;
-    if (total == 0) {
-        clear_page();
-        tft.setTextColor(C_MDGREY, C_BLACK);
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString("No signals detected", SCREEN_W / 2, PAGE_Y + PAGE_H / 2, 2);
-        return;
+static void list_btn(int x, int y, int w, int h, const char* label, bool on, uint16_t col) {
+    tft.fillRect(x, y, w, h, on ? col : C_PANEL);
+    tft.drawRect(x, y, w, h, on ? col : C_BORDER);
+    tft.setTextColor(on ? C_BLACK : col, on ? col : C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(label, x + w / 2, y + h / 2, 1);
+}
+
+static void draw_list_bars(int shown, int total) {
+    static const char* const RAD[] = { "BOTH", "WI-FI", "BLE" };
+    static const char* const SRT[] = { "SORT STRONG", "SORT NEWEST", "SORT CONF" };
+    for (int c = 0; c < 6; c++) {                                    // bar 1: ALL + the five types
+        bool on = (s_lf_type == c);
+        uint16_t col = c == 0 ? C_ACCENT : TCOL[c - 1];
+        list_btn(c * LIST_CHIP_W, PAGE_Y, LIST_CHIP_W - 1, 19, c == 0 ? "ALL" : TSHRT[c - 1], on, col);
     }
-    int ry = PAGE_Y, drawn = 0;
+    int y = PAGE_Y + 20;                                             // bar 2
+    list_btn(0, y, 58, 17, RAD[s_lf_radio], s_lf_radio != 0, C_ACCENT);
+    list_btn(60, y, 62, 17, "ALERTS", s_lf_alerts, C_WARN);
+    list_btn(124, y, 92, 17, SRT[s_lsort], s_lsort != 0, C_ACCENT);
+    char cb[16];
+    snprintf(cb, sizeof(cb), "%d of %d", shown, total);
+    tft.fillRect(218, y, SCREEN_W - 14 - 218, 17, C_BLACK);
+    tft.setTextColor(shown < total ? C_ACCENT : C_MDGREY, C_BLACK);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(cb, SCREEN_W - 17, y + 8, 1);
+}
+
+static void draw_list() {
+    list_build();
+    int total_all = model_visible_count();
+    int maxs = max(0, s_ln - LIST_ROWS);
+    if (s_list_scroll > maxs) s_list_scroll = maxs;
+    draw_list_bars(s_ln, total_all);
+    int ry = LIST_TOP, drawn = 0;
     uint32_t now = millis();
-    for (int n = s_scroll; drawn < ROWS_VIS; n++) {
-        int i = visible_index(n);
-        if (i < 0) break;
-        const Det& d = g_model.dets[i];
+    for (int n = s_list_scroll; drawn < LIST_ROWS && n < s_ln; n++) {
+        const Det& d = g_model.dets[s_lidx[n]];
         uint16_t tc = TCOL[d.type], bg = (drawn % 2 == 0) ? C_PANEL : C_PANEL2;
         tft.fillRect(0, ry, SCREEN_W - 14, ROW_H, bg);
         tft.fillRect(0, ry, 3, ROW_H, tc);
@@ -586,8 +649,18 @@ static void draw_list() {
         tft.drawString(tb, 230, ry + ROW_H / 2, 1);
         ry += ROW_H; drawn++;
     }
-    if (ry < TAB_Y) tft.fillRect(0, ry, SCREEN_W - 14, TAB_Y - ry, C_BLACK);
-    draw_scroll_strip14(total);
+    int bottom = PAGE_Y + PAGE_H;
+    if (ry < bottom) tft.fillRect(0, ry, SCREEN_W - 14, bottom - ry, C_BLACK);
+    if (s_ln == 0) {
+        tft.setTextColor(C_MDGREY, C_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        if (total_all == 0) tft.drawString("No signals detected", (SCREEN_W - 14) / 2, LIST_TOP + 50, 2);
+        else {
+            tft.drawString("No matches", (SCREEN_W - 14) / 2, LIST_TOP + 44, 2);
+            tft.drawString("tap ALL / BOTH to clear the filter", (SCREEN_W - 14) / 2, LIST_TOP + 66, 1);
+        }
+    }
+    draw_scroll_strip14(s_ln, s_list_scroll, LIST_ROWS);
 }
 
 // ---- INFO (detail) ---------------------------------------------------------------------------
@@ -1452,16 +1525,37 @@ void ui_touch(int tx, int ty) {
         return;
     }
     if (s_tab == TAB_LIST) {
-        int total = model_visible_count();
-        if (tx >= SCREEN_W - 14) {
-            int mid = PAGE_Y + (PAGE_H - 36) / 2;
-            if (ty < mid && s_scroll > 0) s_scroll--;
-            else if (ty >= mid && ty < TAB_Y - 10 && s_scroll + ROWS_VIS < total) s_scroll++;
+        int maxs = max(0, s_ln - LIST_ROWS);
+        if (tx >= SCREEN_W - 14) {                                   // scroll strip: arrows move a page, the track jumps to that spot
+            if (ty < PAGE_Y + 24) s_list_scroll = max(0, s_list_scroll - LIST_ROWS);
+            else if (ty >= TAB_Y - 36) s_list_scroll = min(maxs, s_list_scroll + LIST_ROWS);
+            else {
+                int th = PAGE_H - 60;
+                int pos = constrain(ty - (PAGE_Y + 24), 0, th);
+                s_list_scroll = (pos * maxs + th / 2) / th;
+            }
             s_dirty = true;
             return;
         }
-        int i = visible_index(s_scroll + (ty - PAGE_Y) / ROW_H);
-        if (i >= 0) { strncpy(s_sel_mac, g_model.dets[i].mac, sizeof(s_sel_mac) - 1); s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_sub = 0; s_dirty = true; }
+        if (ty < PAGE_Y + 20) {                                      // type chips
+            int c = tx / LIST_CHIP_W;
+            s_lf_type = (uint8_t)(c > 5 ? 5 : c);
+            s_list_scroll = 0; s_dirty = true;
+            return;
+        }
+        if (ty < LIST_TOP) {                                         // radio / alerts / sort
+            if (tx < 59) s_lf_radio = (uint8_t)((s_lf_radio + 1) % 3);
+            else if (tx < 123) s_lf_alerts = !s_lf_alerts;
+            else if (tx < 217) s_lsort = (uint8_t)((s_lsort + 1) % 3);
+            else return;
+            s_list_scroll = 0; s_dirty = true;
+            return;
+        }
+        int k = s_list_scroll + (ty - LIST_TOP) / ROW_H;
+        if (k < s_ln && g_model.dets[s_lidx[k]].used) {
+            strncpy(s_sel_mac, g_model.dets[s_lidx[k]].mac, sizeof(s_sel_mac) - 1);
+            s_have_sel = true; s_tab = TAB_INFO; s_scroll = 0; s_sub = 0; s_dirty = true;       // s_list_scroll is kept for the way back
+        }
         return;
     }
     if (s_tab == TAB_INFO && s_have_sel) {
