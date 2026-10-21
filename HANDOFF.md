@@ -155,6 +155,9 @@
   tappable rows that open and focus the AP. Wire details in PROTOCOL.md section 3b-3. Verified on hardware: BLE focus (advert
   payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
   Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, (vendor names for peers now done, see Vendor database).
+  Open-network profiling (issue #11): SET > PROFILE switch (off at every boot, C5 also resets it on HELLO); when on, a Wi-Fi focus
+  reads unencrypted data frames only for DHCP hostname/vendor class, mDNS responses and SSDP NOTIFY SERVER plus port tallies (see PROTOCOL.md
+  3b-3). Shown on INFO of the device and in the TRAFF page. Code: firmware-c5/main/opennet.*. NOT yet tested on a real open network.
   Console test keys on the CYD: f focus first detection, F focus strongest AP, r release, k print the focus view.
 - Scan scheduler (issue #3): sched.* on the C5 splits the one radio between Wi-Fi and BLE. CONCURRENT (BLE window 10..90 %) or SLICED
   (exclusive Wi-Fi / BLE slots); focus mode locks it (Wi-Fi focus = BLE paused, BLE focus = Wi-Fi receive paused). The CYD holds four

@@ -107,7 +107,7 @@ static void send_set_power(bool charge) {
 static void send_set_config() {
     uint8_t buf[128];
     ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
-    ss_cbor_map(&w, 10);
+    ss_cbor_map(&w, 11);
     ss_cbor_kv_bool(&w, "drone", g_ui_set.detect[0]);
     ss_cbor_kv_bool(&w, "tracker", g_ui_set.detect[1]);
     ss_cbor_kv_bool(&w, "camera", g_ui_set.detect[2]);
@@ -118,6 +118,7 @@ static void send_set_config() {
     ss_cbor_kv_uint(&w, "bpct", sp.bpct);
     ss_cbor_kv_uint(&w, "wms", sp.wms);
     ss_cbor_kv_uint(&w, "bms", sp.bms);
+    ss_cbor_kv_bool(&w, "onet", g_ui_set.opennet);           // open-network profiling; the C5 also drops it to off on every new session
     ss_cbor_kv_uint(&w, "bdms", sp.bdms);                    // time on each Wi-Fi band before switching (the scope follows it)
     g_link.send_req(SS_OP_SET_CONFIG, nullptr, buf, w.len);
 }
@@ -176,6 +177,10 @@ static void send_focus_view() {
 // Console test hooks (they bypass the INFO screen; the C5's own 15 s lease then ends the focus)
 static bool s_print_fv = false;
 static char s_dbg_mac[18] = {};
+static char s_dbg_radio[8] = {};
+static uint8_t s_dbg_ch = 0;
+static bool s_dbg_hold = false;                       // console focus: renew the lease like the UI does, until 'r'
+static uint32_t s_dbg_ms = 0;
 static void dbg_focus(const char* mac, const char* radio, uint8_t ch) {
     uint8_t buf[64];
     ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
@@ -185,6 +190,8 @@ static void dbg_focus(const char* mac, const char* radio, uint8_t ch) {
     ss_cbor_kv_text(&w, "radio", radio);
     if (ch) ss_cbor_kv_uint(&w, "ch", ch);
     strncpy(s_dbg_mac, mac, sizeof(s_dbg_mac) - 1);
+    strncpy(s_dbg_radio, radio, sizeof(s_dbg_radio) - 1);
+    s_dbg_ch = ch; s_dbg_hold = true; s_dbg_ms = millis();
     Serial.printf("[focus] request %s %s ch%u\n", mac, radio, (unsigned)ch);
     g_link.send_req(SS_OP_FOCUS_TARGET, nullptr, buf, w.len);
 }
@@ -195,6 +202,11 @@ static void focus_service(uint32_t now) {
     char mac[18];
     bool want = ui_wants_focus(mac);
     if (g_link.busy()) return;
+    if (s_dbg_hold && !want && (int32_t)(now - s_dbg_ms) >= FOCUS_REFRESH_MS) {   // console focus lease
+        s_dbg_ms = now;
+        dbg_focus(s_dbg_mac, s_dbg_radio, s_dbg_ch);
+        return;
+    }
     if (want) {
         bool changed = !s_focus_on || strcmp(mac, s_focus_mac) != 0;
         if ((changed || (int32_t)(now - s_focus_sent_ms) >= FOCUS_REFRESH_MS) && (int32_t)(now - s_focus_fail_ms) >= 2000) {
@@ -397,6 +409,14 @@ static void on_resp(uint8_t op, uint8_t status, const uint8_t* cb, size_t n, uin
                     Serial.printf("[focus]   peer %s role=%u rssi=%d >%u <%u bytes %u/%u qos=%u\n", p.mac, p.role, p.rssi, (unsigned)p.tof,
                                   (unsigned)p.frf, (unsigned)p.tob, (unsigned)p.frb, (unsigned)p.qos);
                 }
+                for (int i = 0; i < g_fv.nonet; i++) {
+                    const FvOnet& o = g_fv.onet[i];
+                    Serial.printf("[onet]   %s host='%s' class='%s' mdns=%u svc=%u ssdp='%s' tcp=%u udp=%u icmp=%u ports=%u\n", o.mac, o.host, o.vc,
+                                  o.nnm, o.nsv, o.ss, (unsigned)o.tcp, (unsigned)o.udp, (unsigned)o.icmp, o.npt);
+                    for (int k = 0; k < o.nnm; k++) Serial.printf("[onet]     name '%s'\n", o.nm[k]);
+                    for (int k = 0; k < o.nsv; k++) Serial.printf("[onet]     svc '%s'\n", o.sv[k]);
+                    for (int k = 0; k < o.npt; k++) Serial.printf("[onet]     port %u/%s x%u\n", o.pt[k][0], o.pt[k][1] == 6 ? "tcp" : "udp", o.pt[k][2]);
+                }
             }
         }
         return;
@@ -524,6 +544,7 @@ static void console() {
             break;
         }
         case 'r': {                                                // release focus
+            s_dbg_hold = false;
             uint8_t buf[48]; ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
             ss_cbor_map(&w, 1); ss_cbor_kv_bool(&w, "on", false);
             g_link.send_req(SS_OP_FOCUS_TARGET, nullptr, buf, w.len);
@@ -531,6 +552,7 @@ static void console() {
             break;
         }
         case 'k': s_print_fv = true; send_focus_view(); break;     // print the focus view
+        case 'o': g_ui_set.opennet = !g_ui_set.opennet; Serial.printf("[onet] open-network profiling %s\n", g_ui_set.opennet ? "ON" : "OFF"); send_set_config(); break;   // test hook, same as SET > PROFILE
         case '1': case '2': case '3': case '4': {                  // scan balance preset (test hook; not saved)
             int p = ch - '1';
             if (p < SCHED_N) { g_ui_set.sched = (uint8_t)p; Serial.printf("[sched] preset %d %s\n", p + 1, SCHED_PRESETS[p].name); send_set_config(); }

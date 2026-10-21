@@ -110,6 +110,7 @@ static void op_hello(uint8_t seq, const uint8_t* a, size_t n) {
     S.low_reported = false;
     S.subscribed = false;                         // a new session must re-subscribe
     det_focus_stop("new session");                // focus never survives a reconnect
+    det_set_opennet(false);                       // open-network profiling is off until this session switches it on
     ss_token_reset_replay_window();
 
     uint8_t b[64];
@@ -163,6 +164,7 @@ static void op_set_config(uint8_t seq, const uint8_t* a, size_t n) {
     if (ss_cbor_get_uint(a, n, "wms", &u)) sw = (int)u;
     if (ss_cbor_get_uint(a, n, "bms", &u)) sbl = (int)u;
     if (ss_cbor_get_uint(a, n, "bdms", &u)) sbd = (int)u;
+    { bool on; if (ss_cbor_get_bool(a, n, "onet", &on)) det_set_opennet(on); }   // open-network profiling (issue #11)
     if (sm >= 0 || sb >= 0 || sw >= 0 || sbl >= 0 || sbd >= 0) det_set_sched(sm, sb, sw, sbl, sbd);
     send_resp(seq, SS_OK, NULL, 0);
 }
@@ -191,7 +193,7 @@ static void op_get_status(uint8_t seq) {
 }
 
 // ---- real PASSIVE results ---------------------------------------------------
-static uint8_t s_big[3072];                        // scan / list reply staging (link task only)
+static uint8_t s_big[4000];                        // scan / list reply staging (link task only)
 
 static void op_scan_wifi(uint8_t seq) {
     ss_cbor_w_t w; ss_cbor_w_init(&w, s_big, sizeof(s_big));

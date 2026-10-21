@@ -101,7 +101,7 @@ A RESP payload is `[STATUS u8][ CBOR map of result ]`.
 |--------|------|-------|-------|
 | 0x01 | `HELLO` | — | handshake, exchanges session secret + versions |
 | 0x02 | `SET_MODE` | — | CYD pushes authoritative mode to C5 shadow |
-| 0x05 | `SET_CONFIG` | — | detection-type toggles `{drone,tracker,camera,bodycam,attack: bool}` and the scan scheduler `{smode,bpct,wms,bms}` (§3b-4); the CYD pushes its saved settings after every HELLO; a type switched off is dropped from the C5 registry |
+| 0x05 | `SET_CONFIG` | — | detection-type toggles `{drone,tracker,camera,bodycam,attack: bool}` and the scan scheduler `{smode,bpct,wms,bms,bdms}` (§3b-4) and open-network profiling `{onet: bool}` (§3b-3); the CYD pushes its saved settings after every HELLO; a type switched off is dropped from the C5 registry |
 | 0x04 | `SET_POWER` | — | user-selected charge mode on/off; refused while forced — see §3c |
 | 0x03 | `GET_STATUS` | — | radio state, mode shadow, queue depth, battery (`batt_mv`, `batt_low`) — see §3a |
 | 0x10 | `SCAN_WIFI` | PASSIVE | listen-only; no probe requests |
@@ -208,10 +208,23 @@ focus restores the mgmt-only filter, the channel hop and the normal BLE scan dut
 | Wi-Fi: `beacons`, `presp`, `preq`, `omgmt`, `data` | frame counts by kind (`data` counts data frames to or from the target) |
 | Wi-Fi: `iemap` (32 B), `ht`, `vie` (n x 4 B) | element-ID bitmap, spatial streams, vendor-IE OUI + type |
 | Wi-Fi: `peers` | up to 12, busiest first: `{mac, role(0 unknown,1 client of target,2 AP of target), rssi, tof, frf, tob, frb, qos, age_ms}` |
+| Wi-Fi: `onet` | only when open-network profiling is on (below): up to 6 devices, busiest first |
 | BLE: `advs`, `adv_int`, `raw` | adverts heard, smallest gap in ms, latest advert payload (<= 62 B) |
 
 `SS_EVT_RSSI_TICK` (needs `SUBSCRIBE_EVENTS`), about 5 per second while focused: `{mac, rssi, age_ms,
 n}`; `age_ms` 99999 means the target has not been heard yet. The CYD's HUNT page runs on these.
+
+**Open-network profiling** (issue #11, PASSIVE). `SET_CONFIG {onet: bool}`, default off, and the C5 sets it
+back to off on every HELLO, so a new session starts off until the CYD (which does not save the setting) asks.
+While a Wi-Fi focus is active and it is on, the C5 reads the data frames of the focused target (any frame whose
+addr1, addr2 or addr3 is the target) just far enough to learn about the device that sent them. It reads a frame only if
+the Protected bit is clear (so never an encrypted frame), it is LLC/SNAP IPv4, and it is the first IP fragment. It keeps:
+the sender's IP protocol and TCP/UDP destination-port tallies (headers only); the DHCP client hostname (option 12) and
+vendor class (option 60) of a client message; the names a device announces in an mDNS *response* (PTR instance, SRV/A/AAAA
+owner; never queries, never TXT); and the SSDP NOTIFY `SERVER` header. It never reads port 53 (DNS) in either
+direction, never reads a TCP payload (so no TLS SNI, no HTTP), and no payload bytes are stored: only the short extracted
+strings, in RAM, until the focus ends (`opennet_clear`). Each `onet` item: `{mac, tcp, udp, icmp, h?, vc?, nm?[<=3],
+sv?[<=2], ss?, pt?[[port, proto, count] x <=4]}`. Code: `firmware-c5/main/opennet.*`.
 
 Limits: BLE connections hop channels and are not visible, so a BLE target has no peers. The
 "Correlated" tier of LINKS (co-travel over time) needs session history on SD and is not built.

@@ -230,7 +230,78 @@ bool model_ingest_focus(const uint8_t* cb, size_t n) {
             if (!ss_cbor_skip(&p, end)) break;
         }
     }
+    if (ss_cbor_map_get(cb, n, "onet", &arr) && arr.type == SS_CBOR_ARRAY) {
+        const uint8_t* p = arr.ptr;
+        const uint8_t* end = cb + n;
+        for (size_t i = 0; i < arr.n && f.nonet < 6; i++) {
+            const uint8_t* item = p;
+            size_t il = end - item;
+            ss_cbor_val_t pm, v;
+            if (ss_cbor_map_get(item, il, "mac", &pm) && pm.type == SS_CBOR_TEXT) {
+                FvOnet& q = f.onet[f.nonet++];
+                copy_text(q.mac, sizeof(q.mac), pm);
+                q.tcp = get_u32(item, il, "tcp");
+                q.udp = get_u32(item, il, "udp");
+                q.icmp = get_u32(item, il, "icmp");
+                if (ss_cbor_map_get(item, il, "h", &v) && v.type == SS_CBOR_TEXT) copy_text(q.host, sizeof(q.host), v);
+                if (ss_cbor_map_get(item, il, "vc", &v) && v.type == SS_CBOR_TEXT) copy_text(q.vc, sizeof(q.vc), v);
+                if (ss_cbor_map_get(item, il, "ss", &v) && v.type == SS_CBOR_TEXT) copy_text(q.ss, sizeof(q.ss), v);
+                if (ss_cbor_map_get(item, il, "nm", &v) && v.type == SS_CBOR_ARRAY) {
+                    const uint8_t* t = v.ptr;
+                    for (size_t k = 0; k < v.n && q.nnm < 3; k++) {
+                        if ((*t >> 5) == 3 && (*t & 0x1F) < 24) {                 // text, length in the head byte
+                            size_t L = *t & 0x1F;
+                            size_t c = L < sizeof(q.nm[0]) - 1 ? L : sizeof(q.nm[0]) - 1;
+                            memcpy(q.nm[q.nnm], t + 1, c); q.nm[q.nnm][c] = 0; q.nnm++;
+                        }
+                        if (!ss_cbor_skip(&t, end)) break;
+                    }
+                }
+                if (ss_cbor_map_get(item, il, "sv", &v) && v.type == SS_CBOR_ARRAY) {
+                    const uint8_t* t = v.ptr;
+                    for (size_t k = 0; k < v.n && q.nsv < 2; k++) {
+                        if ((*t >> 5) == 3 && (*t & 0x1F) < 24) {
+                            size_t L = *t & 0x1F;
+                            size_t c = L < sizeof(q.sv[0]) - 1 ? L : sizeof(q.sv[0]) - 1;
+                            memcpy(q.sv[q.nsv], t + 1, c); q.sv[q.nsv][c] = 0; q.nsv++;
+                        }
+                        if (!ss_cbor_skip(&t, end)) break;
+                    }
+                }
+                if (ss_cbor_map_get(item, il, "pt", &v) && v.type == SS_CBOR_ARRAY) {
+                    const uint8_t* t = v.ptr;
+                    auto rd = [&](const uint8_t*& c) -> uint32_t {                // unsigned int, any width the C5 sends
+                        uint8_t h = *c++;
+                        if ((h >> 5) != 0) return 0;
+                        uint8_t a = h & 0x1F;
+                        if (a < 24) return a;
+                        uint32_t r = 0;
+                        int nb = a == 0x18 ? 1 : a == 0x19 ? 2 : 4;
+                        for (int b = 0; b < nb; b++) r = (r << 8) | *c++;
+                        return r;
+                    };
+                    for (size_t k = 0; k < v.n && q.npt < 4; k++) {
+                        const uint8_t* c = t;
+                        if (*c == 0x83) {                                          // [port, proto, count]
+                            c++;
+                            q.pt[q.npt][0] = (uint16_t)rd(c);
+                            q.pt[q.npt][1] = (uint16_t)rd(c);
+                            q.pt[q.npt][2] = (uint16_t)rd(c);
+                            q.npt++;
+                        }
+                        if (!ss_cbor_skip(&t, end)) break;
+                    }
+                }
+            }
+            if (!ss_cbor_skip(&p, end)) break;
+        }
+    }
     return true;
+}
+
+const FvOnet* model_onet_for(const char* mac) {
+    for (int i = 0; i < g_fv.nonet; i++) if (strcasecmp(g_fv.onet[i].mac, mac) == 0) return &g_fv.onet[i];
+    return nullptr;
 }
 
 void model_ingest_tick(const uint8_t* cb, size_t n) {

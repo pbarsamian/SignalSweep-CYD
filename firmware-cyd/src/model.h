@@ -110,6 +110,21 @@ struct FvPeer {
     uint32_t tob = 0, frb = 0;         // bytes
     uint32_t qos = 0, age_ms = 0;
 };
+// Open-network profiling (issue #11): what one device near the focused target announced about itself.
+// Only present when the owner switched the feature on; the C5 never reads payloads beyond these fields.
+struct FvOnet {
+    char     mac[18] = {};
+    char     host[24] = {};            // DHCP hostname
+    char     vc[20] = {};              // DHCP vendor class
+    char     nm[3][20] = {};           // mDNS names it announces
+    uint8_t  nnm = 0;
+    char     sv[2][20] = {};           // mDNS service types
+    uint8_t  nsv = 0;
+    char     ss[28] = {};              // SSDP SERVER
+    uint32_t tcp = 0, udp = 0, icmp = 0;
+    uint16_t pt[4][3] = {};            // {port, proto (6 TCP / 17 UDP), count}
+    uint8_t  npt = 0;
+};
 struct FocusView {
     bool     have = false;
     char     mac[18] = {};
@@ -128,7 +143,10 @@ struct FocusView {
     uint8_t  raw_len = 0;
     FvPeer   peers[FV_MAX_PEERS];
     uint8_t  npeers = 0;
+    FvOnet   onet[6];
+    uint8_t  nonet = 0;
 };
+const FvOnet* model_onet_for(const char* mac);   // the announcements for one MAC in the current focus view, or null
 extern FocusView g_fv;
 bool model_ingest_focus(const uint8_t* cbor, size_t n);
 void model_focus_clear();

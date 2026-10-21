@@ -33,7 +33,7 @@ static int      s_tab = TAB_SCOPE;
 static bool     s_dirty = true;          // the page needs a full repaint
 static bool     s_hdr_dirty = true;
 static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
-static int      s_set_page = 0;          // 0 alerts, 1 device, 2 about
+static int      s_set_page = 0;          // 0 alerts, 1 device, 2 profile (open-network), 3 about
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
 #endif
@@ -727,6 +727,19 @@ static void add_focus_rows(const Det& d) {
             const char* who = vie_name(g_fv.vie[i]);
             if (who) ROW("Vendor IE", "%s", who);
         }
+        if (g_ui_set.opennet) {                             // open-network profiling: this device's own announcements
+            const FvOnet* o = model_onet_for(d.mac);
+            if (!o) ROW("Open net", "nothing announced yet");
+            else {
+                if (o->host[0]) ROW("DHCP hostname", "%s", o->host);
+                if (o->vc[0]) ROW("DHCP class", "%s", o->vc);
+                for (int i = 0; i < o->nnm; i++) ROW("mDNS name", "%s", o->nm[i]);
+                for (int i = 0; i < o->nsv; i++) ROW("mDNS service", "%s", o->sv[i]);
+                if (o->ss[0]) ROW("SSDP server", "%s", o->ss);
+                ROW("IP traffic", "tcp %u udp %u icmp %u", (unsigned)o->tcp, (unsigned)o->udp, (unsigned)o->icmp);
+                for (int i = 0; i < o->npt; i++) ROW("Port", "%u/%s x%u", o->pt[i][0], o->pt[i][1] == 6 ? "tcp" : "udp", o->pt[i][2]);
+            }
+        }
     } else {
         ROW("Focus", "BLE, full duty");
         ROW("Adverts (focus)", "%u", (unsigned)g_fv.advs);
@@ -884,6 +897,17 @@ static void build_traffic(const Det& d) {
     if (g_fv.npeers == 0) {
         lrow(LR_INFO, C_MDGREY, "No peers yet. Needs a busy target:");
         lrow(LR_INFO, C_MDGREY, "an AP with clients, or an active client.");
+    }
+    if (g_ui_set.opennet) {                                 // open-network profiling: who announced what (SET > PROFILE)
+        lrow(LR_HEAD, C_ATTACK, "OPEN NET: announced");
+        if (!g_fv.nonet) lrow(LR_INFO, C_MDGREY, "Waiting for DHCP / mDNS / SSDP (open nets only)");
+        for (int i = 0; i < g_fv.nonet; i++) {
+            const FvOnet& o = g_fv.onet[i];
+            const char* who = o.host[0] ? o.host : o.nnm ? o.nm[0] : o.ss[0] ? o.ss : o.vc[0] ? o.vc : "";
+            int pr = -100;                                  // the peer's own RSSI from the peer list, if it is there
+            for (int k = 0; k < g_fv.npeers; k++) if (strcasecmp(g_fv.peers[k].mac, o.mac) == 0) pr = g_fv.peers[k].rssi;
+            lrow_peer(C_ATTACK, 0, g_fv.ch, pr, o.mac, "%s %.20s", o.mac, who);
+        }
     }
 }
 
@@ -1244,18 +1268,38 @@ static void draw_about(const UiCtx& c) {
     tft.drawString(b, 4, y + 22, 1);
 }
 
+// PROFILE: the one switch for open-network profiling (issue #11). Plain statement of what it does.
+static void draw_profile() {
+    int y = DEV_Y0;
+    draw_toggle(2, y, SCREEN_W - 4, 38, "Open-network profiling", g_ui_set.opennet ? "ON until reboot" : "OFF", g_ui_set.opennet);
+    static const char* const T[] = {
+        "Passive. Runs only while focused on a Wi-Fi target,",
+        "and only reads UNENCRYPTED frames.",
+        "Keeps: DHCP hostname + vendor class, mDNS and",
+        "SSDP announcements, protocols and ports.",
+        "Never: payloads, DNS, web addresses, TLS names.",
+        "Held in RAM, dropped when the focus is released.",
+        "Shown on INFO of a peer and on the TRAFF page.",
+        "Off at every boot. Encrypted networks show nothing.",
+    };
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(C_LTGREY, C_BLACK);
+    for (int i = 0; i < 8; i++) tft.drawString(T[i], 4, y + 46 + i * 11, 1);
+}
+
 static void draw_set(const UiCtx& c) {
-    // Segmented control: ALERTS | DEVICE | ABOUT
-    static const char* const SEG[3] = { "ALERTS", "DEVICE", "ABOUT" };
-    for (int i = 0; i < 3; i++) {
+    // Segmented control: ALERTS | DEVICE | PROFILE | ABOUT
+    static const char* const SEG[4] = { "ALERTS", "DEVICE", "PROFILE", "ABOUT" };
+    for (int i = 0; i < 4; i++) {
         bool on = (s_set_page == i);
-        int x = i * (SCREEN_W / 3);
-        tft.fillRect(x, PAGE_Y, SCREEN_W / 3 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
+        int x = i * (SCREEN_W / 4);
+        tft.fillRect(x, PAGE_Y, SCREEN_W / 4 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
         tft.setTextColor(on ? C_BLACK : C_LTGREY, on ? C_ACCENT : C_PANEL);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString(SEG[i], x + SCREEN_W / 6, PAGE_Y + SET_SEG_H / 2 - 1, 1);
+        tft.drawString(SEG[i], x + SCREEN_W / 8, PAGE_Y + SET_SEG_H / 2 - 1, 1);
     }
-    if (s_set_page == 2) { draw_about(c); return; }
+    if (s_set_page == 3) { draw_about(c); return; }
+    if (s_set_page == 2) { draw_profile(); return; }
     if (s_set_page == 0) {
         for (int i = 0; i < 7; i++) {
             int col = (i < 4) ? 0 : 1, row = (i < 4) ? i : (i - 4);
@@ -1449,8 +1493,8 @@ void ui_touch(int tx, int ty) {
     }
     if (s_tab == TAB_SET) {
         if (ty < PAGE_Y + SET_SEG_H) {
-            int p = tx / (SCREEN_W / 3);
-            if (p > 2) p = 2;
+            int p = tx / (SCREEN_W / 4);
+            if (p > 3) p = 3;
             if (p != s_set_page) { s_set_page = p; s_dirty = true; }
             return;
         }
@@ -1479,6 +1523,15 @@ void ui_touch(int tx, int ty) {
             }
             return;
         }
+        if (s_set_page == 2) {                              // PROFILE: the open-network switch
+            if (in_rect(tx, ty, 2, DEV_Y0, SCREEN_W - 4, 38)) {
+                g_ui_set.opennet = !g_ui_set.opennet;
+                if (s_cb.settings_changed) s_cb.settings_changed();
+                s_dirty = true;
+            }
+            return;
+        }
+        if (s_set_page == 3) return;                        // ABOUT: nothing to tap
         int y = DEV_Y0 + DEV_ROW;                           // CHARGE MODE
         if (in_rect(tx, ty, 6, y, SCREEN_W - 12, 30)) { if (s_cb.enter_charge) s_cb.enter_charge(); return; }
         y += DEV_ROW;                                        // brightness - / +

@@ -7,6 +7,7 @@
 #include <strings.h>
 #include "signatures.h"
 #include "focus.h"
+#include "opennet.h"
 #include "sched.h"
 #include "ss_protocol.h"
 #include <stdio.h>
@@ -50,12 +51,19 @@ void det_api_start(bool radio_on) {
     sched_start();
 }
 
-void det_focus_stop(const char* why) {
+// keep_onet: a pivot from one Wi-Fi target to another inside the same focus keeps what open-network profiling
+// learned (a DHCP hostname is announced once, at join, and would be gone for good). Anything else drops it.
+static void focus_stop_impl(const char* why, bool keep_onet) {
     if (!focus_active()) return;
     focus_stop(why);
+    if (!keep_onet) opennet_clear();                 // what a focus learned about a network never outlives it
     radio_wifi_set_data_filter(false);
     sched_lock(SCHED_LOCK_NONE);
 }
+
+void det_focus_stop(const char* why) { focus_stop_impl(why, false); }
+
+void det_set_opennet(bool on) { opennet_set_enabled(on); }
 
 void det_set_sched(int mode, int ble_pct, int wifi_ms, int ble_ms, int band_ms) {
     sched_set(mode, ble_pct, wifi_ms, ble_ms);
@@ -151,7 +159,7 @@ int det_focus_request(const uint8_t* a, size_t n, ss_cbor_w_t* w) {
         if (idx < 0) ESP_LOGW("focus", "registry full: focusing without a list entry");   // focus does not need one
     }
 
-    det_focus_stop("retarget");
+    focus_stop_impl("retarget", wifi && focus_is_wifi());      // Wi-Fi to Wi-Fi keeps the open-network table
     focus_start(mac, wifi, (uint8_t)ch);
     if (wifi) radio_wifi_set_data_filter(true);
     sched_lock(wifi ? SCHED_LOCK_WIFI : SCHED_LOCK_BLE);   // park the radio on the target's side
@@ -190,6 +198,8 @@ bool det_encode_focus(ss_cbor_w_t* w) {
     else pairs += 2;                                 // advs, adv_int
     if (f.wifi && f.ht_streams) pairs++;
     if (f.wifi && f.vie_count) pairs++;
+    bool onet = f.wifi && opennet_enabled();
+    if (onet) pairs++;
     if (!f.wifi && f.raw_len) pairs++;
     ss_cbor_map(w, pairs);
     ss_cbor_kv_text(w, "mac", mac);
@@ -235,6 +245,47 @@ bool det_encode_focus(ss_cbor_w_t* w) {
             ss_cbor_kv_uint(w, "frb", p.from_bytes);
             ss_cbor_kv_uint(w, "qos", p.qos_frames);
             ss_cbor_kv_uint(w, "age_ms", now - p.last_ms);
+        }
+        if (onet) {                                  // open-network profiling: what the other end announced (opennet.h)
+            static OnPeer op[ON_MAX_PEERS];          // link task only; keep off the stack
+            int on = opennet_snapshot(op, ON_MAX_PEERS);
+            if (on > 6) on = 6;                      // the reply has to fit one frame
+            ss_cbor_text(w, "onet");
+            ss_cbor_array(w, (size_t)on);
+            for (int i = 0; i < on; i++) {
+                const OnPeer& q = op[i];
+                char qm[20];
+                snprintf(qm, sizeof(qm), "%02X:%02X:%02X:%02X:%02X:%02X", q.mac[0], q.mac[1], q.mac[2], q.mac[3], q.mac[4], q.mac[5]);
+                int np = 0;
+                for (int k = 0; k < ON_NPORT; k++) if (q.ports[k].n) np++;
+                size_t kv = 4;                       // mac tcp udp icmp
+                if (q.host[0]) kv++;
+                if (q.vclass[0]) kv++;
+                if (q.nnames) kv++;
+                if (q.nsvc) kv++;
+                if (q.ssdp[0]) kv++;
+                if (np) kv++;
+                ss_cbor_map(w, kv);
+                ss_cbor_kv_text(w, "mac", qm);
+                ss_cbor_kv_uint(w, "tcp", q.tcp);
+                ss_cbor_kv_uint(w, "udp", q.udp);
+                ss_cbor_kv_uint(w, "icmp", q.icmp);
+                if (q.host[0]) ss_cbor_kv_text(w, "h", q.host);
+                if (q.vclass[0]) ss_cbor_kv_text(w, "vc", q.vclass);
+                if (q.nnames) { ss_cbor_text(w, "nm"); ss_cbor_array(w, q.nnames); for (int k = 0; k < q.nnames; k++) ss_cbor_text(w, q.name[k]); }
+                if (q.nsvc) { ss_cbor_text(w, "sv"); ss_cbor_array(w, q.nsvc); for (int k = 0; k < q.nsvc; k++) ss_cbor_text(w, q.svc[k]); }
+                if (q.ssdp[0]) ss_cbor_kv_text(w, "ss", q.ssdp);
+                if (np) {
+                    ss_cbor_text(w, "pt");
+                    ss_cbor_array(w, (size_t)np);    // [[port, proto, count], ...]
+                    for (int k = 0; k < ON_NPORT; k++) if (q.ports[k].n) {
+                        ss_cbor_array(w, 3);
+                        ss_cbor_uint(w, q.ports[k].port);
+                        ss_cbor_uint(w, q.ports[k].proto);
+                        ss_cbor_uint(w, q.ports[k].n);
+                    }
+                }
+            }
         }
     } else {
         ss_cbor_kv_uint(w, "advs", f.adv_count);

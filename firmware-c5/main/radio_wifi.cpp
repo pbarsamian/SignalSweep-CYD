@@ -21,6 +21,7 @@
 #include "signatures.h"
 #include "odid_util.h"
 #include "focus.h"
+#include "opennet.h"
 extern "C" {
 #include "odid_wifi.h"
 }
@@ -208,6 +209,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (type == WIFI_PKT_DATA) {                       // only delivered while a focus is active (filter widened)
         auto* dp = (wifi_promiscuous_pkt_t*)buf;
         focus_note_wifi_data(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi);
+        opennet_note(dp->payload, dp->rx_ctrl.sig_len);      // no-op unless the owner switched open-network profiling on
         return;
     }
     if (type != WIFI_PKT_MGMT) return;
