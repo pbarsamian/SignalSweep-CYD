@@ -142,7 +142,10 @@
 - Passive-scan limit: a device whose name is only in a scan response is never named, so the name rules
   (flock, flipper, penguin-NNNNNNNNNN) can miss it. Active scanning would be an ACTIVE op behind consent.
 - BLE positive detection verified with real devices (issue #6): the C5 logged `NEW BLE 'Apple Find My Tracker'
-  conf=80 ... ALERT` and the same alerts reached the CYD as events. The nRF Connect 0xFEED (Tile) test has not been run.
+  conf=80 ... ALERT` and the same alerts reached the CYD as events. Tile: nRF Connect advertising Service Data UUID 0xFEED (data 0x33) in the ADVERTISING data (not the scan response: the C5 is
+  passive and never receives scan responses) gave `NEW BLE 'Tile Tracker' conf=100 best=80 ... ALERT` on the C5 and the same alert on
+  the CYD, ~100 ms later. The Tile rule weight is 80 and needs at least one service-data byte. The audible beep is untested: the owner's
+  CYD has no speaker fitted.
 - Header shows `BLE n` (devices heard in the last 60 s; dim `BLE -` until the first reply or when stale), fed by a
   5 s background SCAN_BLE poll on every tab except the BLE view (issue #7).
 - Focus mode (issue #2): FOCUS_TARGET 0x15 is a lease (renewed every 5 s by the CYD, lapses after 15 s on the C5). Wi-Fi
