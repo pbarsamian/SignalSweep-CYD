@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "detections_api.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "registry.h"
 #include "radio_wifi.h"
 #include "radio_ble.h"
@@ -475,7 +476,9 @@ void det_tick(void) {
     if (now - last_prune >= 1000) { last_prune = now; registry_prune(); }
     // Stats line: every 5 s while scanning, every 60 s in charge mode (fewer wake-ups)
     uint32_t log_every = radio_wifi_enabled() ? 5000 : 60000;
-    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); radio_ble_log_stats(); sched_log(); }
+    if (now - last_log >= log_every) { last_log = now; radio_wifi_log_stats(); radio_ble_log_stats(); sched_log();
+        ESP_LOGI("heap", "free %u B, lowest ever %u B, largest block %u B", (unsigned)esp_get_free_heap_size(),
+                 (unsigned)esp_get_minimum_free_heap_size(), (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)); }
 }
 
 }  // extern "C"
