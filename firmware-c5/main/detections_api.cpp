@@ -8,6 +8,7 @@
 #include "signatures.h"
 #include "focus.h"
 #include "opennet.h"
+#include "capture.h"
 #include "sched.h"
 #include "ss_protocol.h"
 #include <stdio.h>
@@ -56,6 +57,7 @@ void det_api_start(bool radio_on) {
 static void focus_stop_impl(const char* why, bool keep_onet) {
     if (!focus_active()) return;
     focus_stop(why);
+    capture_end();                                   // a capture follows the focus: drain what is queued, then report the end
     if (!keep_onet) opennet_clear();                 // what a focus learned about a network never outlives it
     radio_wifi_set_data_filter(false);
     sched_lock(SCHED_LOCK_NONE);
@@ -64,6 +66,8 @@ static void focus_stop_impl(const char* why, bool keep_onet) {
 void det_focus_stop(const char* why) { focus_stop_impl(why, false); }
 
 void det_set_opennet(bool on) { opennet_set_enabled(on); }
+void det_set_capture(bool on) { capture_set_enabled(on); }
+void det_capture_abort(void) { capture_abort(); }
 
 void det_set_sched(int mode, int ble_pct, int wifi_ms, int ble_ms, int band_ms) {
     sched_set(mode, ble_pct, wifi_ms, ble_ms);

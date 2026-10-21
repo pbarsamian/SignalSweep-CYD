@@ -9,6 +9,7 @@
 #include "model.h"
 #include "mode.h"
 #include "vendor.h"
+#include "sdcap.h"
 #include "about_credits.h"     // generated from CREDITS.md by about_pre.py
 #include <stdarg.h>
 
@@ -1204,6 +1205,70 @@ static void draw_hunt_body(const Det& d, bool gone) {
     tft.drawString(g_ui_set.speaker ? "sound on" : "muted", SCREEN_W - 6, DHEAD_Y + 36, 2);
 }
 
+// ---- CAP: record the focused Wi-Fi target to the microSD as pcapng (issue #10) -----------------------------
+static void draw_button(int x, int y, int w, int h, const char* label, uint16_t col);   // defined with the SET page
+#define CAP_BTN_Y (DLIST_Y + 22)
+
+static void cap_line(int y, uint16_t col, const char* fmt, ...) {          // one opaque-background text line
+    char b[72];
+    va_list ap; va_start(ap, fmt); vsnprintf(b, sizeof(b), fmt, ap); va_end(ap);
+    tft.fillRect(0, y, SCREEN_W, 12, C_BLACK);
+    tft.setTextColor(col, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString(b, 6, y, 1);
+}
+
+static void draw_cap_page(const Det& d, bool gone) {
+    SdCapState st = sdcap_state();
+    bool wifi_focus = !gone && fv_for(d) && g_fv.wifi;
+    bool ok = (st != SDC_IDLE) ? true : sdcap_card_ok();                     // re-checks every 3 s while no card is in
+    int y = DLIST_Y + 2;
+    char cb[40];
+    snprintf(cb, sizeof(cb), "SD card: %s", sdcap_card_text());
+    tft.fillRect(0, y, SCREEN_W, 18, C_BLACK);
+    tft.setTextColor(ok ? C_SIGNAL : C_WARN, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString(cb, 6, y, 2);
+    const char* label;
+    uint16_t col;
+    if (st == SDC_REC) { label = "STOP"; col = C_ATTACK; }
+    else if (st == SDC_STOPPING) { label = "saving..."; col = C_MDGREY; }
+    else if (d.radio == 1) { label = "REC (Wi-Fi targets only for now)"; col = C_MDGREY; }
+    else if (!wifi_focus) { label = "Focus a Wi-Fi target first"; col = C_MDGREY; }
+    else { label = "REC"; col = C_SIGNAL; }
+    draw_button(10, CAP_BTN_Y, SCREEN_W - 20, 34, label, col);
+    const SdCapStats& s = sdcap_stats();
+    int ly = CAP_BTN_Y + 42;
+    if (s.file[0]) {
+        cap_line(ly, C_WHITE, "%s", s.file);
+        cap_line(ly + 13, C_ACCENT, "frames %lu   %lu KB   dropped %lu", (unsigned long)s.frames, (unsigned long)(s.bytes / 1024),
+                 (unsigned long)s.dropped);
+    } else {
+        cap_line(ly, C_MDGREY, "No capture yet");
+        cap_line(ly + 13, C_BLACK, "");
+    }
+    cap_line(ly + 26, sdcap_last_msg()[0] ? C_LTGREY : C_BLACK, "%s", sdcap_last_msg());
+    cap_line(ly + 39, C_MDGREY, "Passive. Data frames are cut to their header:");
+    cap_line(ly + 51, C_MDGREY, "no payloads. Open the .pcapng in Wireshark.");
+}
+
+static void cap_toggle() {
+    Det* dd = model_find(s_sel_mac);
+    const Det& d = dd ? *dd : s_sel_last;
+    if (sdcap_state() == SDC_REC) {
+        sdcap_stop("saved");
+        if (s_cb.settings_changed) s_cb.settings_changed();               // sends cap=false; the C5 drains and reports the end
+        s_dirty = true;
+        return;
+    }
+    if (sdcap_state() != SDC_IDLE) return;
+    if (d.radio == 1) { toast("BLE capture is not built yet"); return; }
+    if (s_sel_gone || !fv_for(d) || !g_fv.wifi) { toast("Focus a Wi-Fi target first"); return; }
+    if (!sdcap_start(d.mac, d.ssid[0] ? d.ssid : d.name, g_fv.ch)) { toast(sdcap_last_msg()); s_dirty = true; return; }
+    if (s_cb.settings_changed) s_cb.settings_changed();                   // sends cap=true
+    s_dirty = true;
+}
+
 static const char* SUB_NAMES[] = { "INFO", "LINKS", "TRAFF", "RAW", "HUNT", "CAP" };
 
 static void draw_info() {
@@ -1244,18 +1309,19 @@ static void draw_info() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString(nm, SCREEN_W / 2, PAGE_Y + 12, 1);
 
-    // Sub-tabs: INFO LINKS TRAFF RAW HUNT are live; CAP needs the SD capture (not built)
+    // Sub-tabs: INFO LINKS TRAFF RAW HUNT CAP
     int w = SCREEN_W / 6;
     for (int i = 0; i < 6; i++) {
         bool on = (i == s_sub);
         tft.fillRect(i * w, SUBTAB_Y, w - 1, SUBTAB_H - 1, on ? tc : C_PANEL);
-        tft.setTextColor(on ? C_BLACK : (i == 5 ? C_BORDER : C_LTGREY), on ? tc : C_PANEL);
+        tft.setTextColor(on ? C_BLACK : C_LTGREY, on ? tc : C_PANEL);
         tft.setTextDatum(MC_DATUM);
         tft.drawString(SUB_NAMES[i], i * w + w / 2, SUBTAB_Y + SUBTAB_H / 2 - 1, 1);
     }
 
     if (s_sub >= 1 && s_sub <= 3) { draw_link_page(d); return; }
     if (s_sub == 4) { draw_hunt_body(d, gone); return; }
+    if (s_sub == 5) { draw_cap_page(d, gone); return; }
 
     build_rows(d, millis());
     int maxs = max(0, s_nrows - DVIS);
@@ -1568,8 +1634,11 @@ void ui_touch(int tx, int ty) {
         }
         if (ty >= SUBTAB_Y && ty < SUBTAB_Y + SUBTAB_H) {
             int p = tx / (SCREEN_W / 6);
-            if (p == 5) toast("CAP needs the SD capture (not built yet)");
-            else if (p >= 0 && p < 5 && p != s_sub) { s_sub = p; s_scroll = 0; s_dirty = true; }
+            if (p >= 0 && p < 6 && p != s_sub) { s_sub = p; s_scroll = 0; s_dirty = true; }
+            return;
+        }
+        if (s_sub == 5) {                                              // CAP: the REC / STOP button
+            if (in_rect(tx, ty, 10, CAP_BTN_Y, SCREEN_W - 20, 34)) cap_toggle();
             return;
         }
         if ((s_sub == 1 || s_sub == 2) && tx < SCREEN_W - DSTRIP_W && ty >= DLIST_Y && ty < DLIST_Y + DLIST_H) {

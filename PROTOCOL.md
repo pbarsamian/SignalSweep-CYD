@@ -214,6 +214,17 @@ focus restores the mgmt-only filter, the channel hop and the normal BLE scan dut
 `SS_EVT_RSSI_TICK` (needs `SUBSCRIBE_EVENTS`), about 5 per second while focused: `{mac, rssi, age_ms,
 n}`; `age_ms` 99999 means the target has not been heard yet. The CYD's HUNT page runs on these.
 
+**Frame capture** (issue #10, PASSIVE). `SET_CONFIG {cap: bool}`, reset to off on every HELLO and ended by the focus ending, a
+retarget, or `cap:false`. It only takes effect during a Wi-Fi focus. While on, every frame to or from the focused MAC (any of addr1,
+addr2, addr3) is queued on the C5 (8 KB ring) and streamed to the CYD as `SS_EVT_CAPTURE` (event kind 5) events, metered to about
+8 KB/s so the link keeps room for everything else. Data frames are cut to their 802.11 header at the source (never the LLC, IP or
+anything above, so no payloads and no EAPOL handshakes); management frames are kept whole up to 400 bytes. Event body (CBOR):
+`{a: capture still on, e: this is the last event of the capture, d: records dropped so far (queue full), r: bytes}` where `r` packs
+whole records back to back, little-endian: `u32 t_ms, u8 ch, s8 rssi, u8 kind (0 mgmt, 1 data), u8 flags (bit 0 truncated),
+u16 caplen, u16 origlen (without the FCS), u8 data[caplen]`. After `cap:false` or the end of the focus the C5 drains its queue and
+sends one final event with `e:true`. Code: `firmware-c5/main/capture.*` and `firmware-cyd/src/sdcap.*`. The CYD writes a pcapng
+(radiotap, linktype 127, microsecond timestamps relative to the first frame) to `/signalsweep/cap_NNN.pcapng` with a `.txt` sidecar.
+
 **Open-network profiling** (issue #11, PASSIVE). `SET_CONFIG {onet: bool}`, default off, and the C5 sets it
 back to off on every HELLO, so a new session starts off until the CYD (which does not save the setting) asks.
 While a Wi-Fi focus is active and it is on, the C5 reads the data frames of the focused target (any frame whose

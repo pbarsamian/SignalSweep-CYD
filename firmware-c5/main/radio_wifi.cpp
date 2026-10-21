@@ -22,6 +22,7 @@
 #include "odid_util.h"
 #include "focus.h"
 #include "opennet.h"
+#include "capture.h"
 extern "C" {
 #include "odid_wifi.h"
 }
@@ -210,6 +211,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
         auto* dp = (wifi_promiscuous_pkt_t*)buf;
         focus_note_wifi_data(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi);
         opennet_note(dp->payload, dp->rx_ctrl.sig_len);      // no-op unless the owner switched open-network profiling on
+        capture_note(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi, dp->rx_ctrl.channel, false);   // no-op unless capturing
         return;
     }
     if (type != WIFI_PKT_MGMT) return;
@@ -221,6 +223,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     int rxCh   = pkt->rx_ctrl.channel;
     if (length < 24) return;
     focus_note_wifi_mgmt(payload, length, rssi);        // no-op unless focused on a Wi-Fi target
+    capture_note(payload, length, rssi, rxCh, true);    // no-op unless capturing
 
     uint8_t fsubtype = (payload[0] >> 4) & 0x0F;
     uint8_t* addr1 = payload + 4;

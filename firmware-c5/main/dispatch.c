@@ -25,6 +25,7 @@
 #include "odid_selftest.h"
 #include "power.h"
 #include "esp_app_desc.h"
+#include "capture.h"
 
 static const char* TAG = "dispatch";
 #define FW_NAME (esp_app_get_description()->version)   // the git revision, from PROJECT_VER in CMakeLists.txt
@@ -111,6 +112,7 @@ static void op_hello(uint8_t seq, const uint8_t* a, size_t n) {
     S.subscribed = false;                         // a new session must re-subscribe
     det_focus_stop("new session");                // focus never survives a reconnect
     det_set_opennet(false);                       // open-network profiling is off until this session switches it on
+    det_capture_abort();                          // and so is capture: a new session starts with an empty queue
     ss_token_reset_replay_window();
 
     uint8_t b[64];
@@ -165,6 +167,7 @@ static void op_set_config(uint8_t seq, const uint8_t* a, size_t n) {
     if (ss_cbor_get_uint(a, n, "bms", &u)) sbl = (int)u;
     if (ss_cbor_get_uint(a, n, "bdms", &u)) sbd = (int)u;
     { bool on; if (ss_cbor_get_bool(a, n, "onet", &on)) det_set_opennet(on); }   // open-network profiling (issue #11)
+    { bool on; if (ss_cbor_get_bool(a, n, "cap", &on)) det_set_capture(on); }    // targeted capture to the CYD microSD (issue #10)
     if (sm >= 0 || sb >= 0 || sw >= 0 || sbl >= 0 || sbd >= 0) det_set_sched(sm, sb, sw, sbl, sbd);
     send_resp(seq, SS_OK, NULL, 0);
 }
@@ -381,6 +384,35 @@ void dispatch_tick(void) {
         if (det_pop_focus_event(&fw)) {
             fb[0] = SS_EVT_RSSI_TICK;
             uart_slave_send(SS_T_EVENT, 0, 0, fb, (uint16_t)(fw.len + 1));
+        }
+        {   // captured frames (issue #10), metered to about 8 KB/s so the 115200 baud link keeps room for everything else
+            static uint32_t cap_last = 0;
+            static int32_t cap_budget = 0;
+            uint32_t dt = now - cap_last;
+            cap_last = now;
+            if (dt > 200) dt = 200;
+            cap_budget += (int32_t)dt * 8;
+            if (cap_budget > 1600) cap_budget = 1600;
+            if (cap_budget >= 480 || capture_pending() == 0) {     // a record can be up to 412 bytes
+                static uint8_t cb[480];
+                static uint8_t ob[640];
+                bool act = false, endf = false;
+                uint32_t dr = 0;
+                size_t cn = capture_pop(cb, sizeof(cb), &act, &endf, &dr);
+                if (cn || endf) {
+                    ss_cbor_w_t cw; ss_cbor_w_init(&cw, ob + 1, sizeof(ob) - 1);
+                    ss_cbor_map(&cw, 4);
+                    ss_cbor_kv_bool(&cw, "a", act);
+                    ss_cbor_kv_bool(&cw, "e", endf);
+                    ss_cbor_kv_uint(&cw, "d", dr);
+                    ss_cbor_kv_bytes(&cw, "r", cb, cn);
+                    if (!cw.err) {
+                        ob[0] = SS_EVT_CAPTURE;
+                        uart_slave_send(SS_T_EVENT, 0, 0, ob, (uint16_t)(cw.len + 1));
+                        cap_budget -= (int32_t)(cn + 24);
+                    }
+                }
+            }
         }
     } else {
         // Not subscribed: drain so the queue never backs up

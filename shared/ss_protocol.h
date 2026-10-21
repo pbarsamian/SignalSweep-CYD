@@ -83,6 +83,7 @@ typedef enum {
     SS_EVT_RSSI_TICK  = 2,
     SS_EVT_TX_STARTED = 3,
     SS_EVT_STATUS     = 4,  // periodic + on low battery: batt_mv, batt_low, mode_shadow
+    SS_EVT_CAPTURE    = 5,  // targeted frame capture for the CYD microSD (issue #10): {a, e, d, r}
 } ss_event_kind_t;
 
 // Low-battery threshold for the STATUS event / GET_STATUS batt_low (millivolts). Tune.

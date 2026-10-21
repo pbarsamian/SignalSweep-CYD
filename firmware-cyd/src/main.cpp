@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include "board_pins.h"
 #include "touch.h"
+#include "sdcap.h"
 #include "ss_protocol.h"
 #include "ss_capabilities.h"
 #include "ss_cbor.h"
@@ -107,7 +108,7 @@ static void send_set_power(bool charge) {
 static void send_set_config() {
     uint8_t buf[128];
     ss_cbor_w_t w; ss_cbor_w_init(&w, buf, sizeof(buf));
-    ss_cbor_map(&w, 11);
+    ss_cbor_map(&w, 12);
     ss_cbor_kv_bool(&w, "drone", g_ui_set.detect[0]);
     ss_cbor_kv_bool(&w, "tracker", g_ui_set.detect[1]);
     ss_cbor_kv_bool(&w, "camera", g_ui_set.detect[2]);
@@ -118,6 +119,7 @@ static void send_set_config() {
     ss_cbor_kv_uint(&w, "bpct", sp.bpct);
     ss_cbor_kv_uint(&w, "wms", sp.wms);
     ss_cbor_kv_uint(&w, "bms", sp.bms);
+    ss_cbor_kv_bool(&w, "cap", sdcap_wanted());               // frame capture to the microSD (issue #10); the C5 resets it on every HELLO
     ss_cbor_kv_bool(&w, "onet", g_ui_set.opennet);           // open-network profiling; the C5 also drops it to off on every new session
     ss_cbor_kv_uint(&w, "bdms", sp.bdms);                    // time on each Wi-Fi band before switching (the scope follows it)
     g_link.send_req(SS_OP_SET_CONFIG, nullptr, buf, w.len);
@@ -332,6 +334,7 @@ static void handle_hello_resp(uint8_t status, const uint8_t* cb, size_t n) {
     g_hb_misses = 0;
     g_next_hb_ms = millis() + 200;
     set_last("HELLO ok, fw %s", c5.fw);
+    sdcap_abort("link reset");                       // a new session: the C5 has dropped any capture
     send_set_mode();                  // push the authoritative mode right away
     send_simple(SS_OP_SUBSCRIBE_EVENTS);   // stream detections as EVENTs
     send_set_config();                // the C5 keeps no settings of its own: push the saved toggles
@@ -474,6 +477,7 @@ static void on_event(uint8_t kind, const uint8_t* cb, size_t n) {
         return;
     }
     if (kind == SS_EVT_RSSI_TICK) { model_ingest_tick(cb, n); return; }
+    if (kind == SS_EVT_CAPTURE) { sdcap_event(cb, n); return; }          // frames for the microSD capture (issue #10)
     if (kind == SS_EVT_DETECTION) {
         ss_cbor_val_t name, rssi, band, ch, mac;
         bool isnew = false, alert = false;
@@ -558,6 +562,7 @@ static void console() {
             if (p < SCHED_N) { g_ui_set.sched = (uint8_t)p; Serial.printf("[sched] preset %d %s\n", p + 1, SCHED_PRESETS[p].name); send_set_config(); }
             break;
         }
+        case 'm': { bool ok = sdcap_card_ok(); Serial.printf("[sd] %s (%s)\n", ok ? "mounted" : "not mounted", sdcap_card_text()); break; }   // test hook: SD card status
         case 'u': send_simple(0x7E); break;                        // unknown: expect ERR_OPCODE
         case 'x': {                                                // corrupt CRC: expect NACK ERR_CRC
             size_t n = g_link.build_req_frame(frame, sizeof(frame), SS_OP_GET_STATUS, nullptr, 0);
@@ -607,6 +612,13 @@ void setup() {
 void loop() {
     g_link.poll();
     console();
+    sdcap_tick(millis());
+    {   // the config push that switches capture on or off is a plain request: repeat it until the C5 acts on it
+        static uint32_t cap_cfg_ms = 0;
+        uint32_t t = millis();
+        bool starting = sdcap_state() == SDC_REC && sdcap_stats().frames == 0 && t - sdcap_stats().start_ms > 2000;
+        if ((starting || sdcap_state() == SDC_STOPPING) && c5.link_up && t - cap_cfg_ms > 2000) { cap_cfg_ms = t; send_set_config(); }
+    }
 
     uint32_t now = millis();
     if (!c5.link_up) {

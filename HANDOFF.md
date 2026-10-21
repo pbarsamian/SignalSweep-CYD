@@ -155,6 +155,12 @@
   tappable rows that open and focus the AP. Wire details in PROTOCOL.md section 3b-3. Verified on hardware: BLE focus (advert
   payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
   Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, (vendor names for peers now done, see Vendor database).
+  Frame capture to microSD (issue #10, phase 1 of 3: Wi-Fi): INFO > CAP records the focused Wi-Fi target to /signalsweep/cap_NNN.pcapng (radiotap,
+  802.11) with a .txt sidecar (Wireshark display filter, ethers-style name map). The C5 streams SS_EVT_CAPTURE (PROTOCOL.md 3b-3); data frames are
+  cut to the 802.11 header, management frames kept whole. The touch controller is now bit-banged so the SD slot has VSPI to itself. Verified
+  2026-10-21: a 70 s capture of the GalaxyS22 hotspot, 1885 frames and 16 dropped, parsed by scapy with no errors (all frames radiotap+802.11, all
+  involving the target, data frames 24-26 bytes). Card must be FAT32. NOT yet: BLE capture (phase 2), the 16 KB pre-trigger ring, per-packet
+  rule/confidence comments and alerts.csv (phase 3). Wireshark itself has not been used to open a file yet.
   LIST page (issue #14): two control bars (type chips; radio, ALERTS, sort, "N of M"), a filtered and sorted index of its own
   (`list_build` in ui.cpp; SCOPE keeps the unfiltered `visible_index`), its own scroll offset, a page-per-tap scroll strip whose track
   jumps proportionally. Filter and sort are session-only. 6 rows visible. All 8 on-device checks passed 2026-10-21.
