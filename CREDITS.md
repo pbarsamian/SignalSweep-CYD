@@ -20,6 +20,10 @@ original author first.
   https://github.com/opendroneid/opendroneid-core-c
 - **CYD User_Setup.h** — Rui Santos / Random Nerd Tutorials.
 
+- **MAC vendor names** - IEEE Registration Authority registries (MA-L, MA-M, MA-S), https://standards.ieee.org/products-programs/regauth/
+- **Bluetooth company, service and member names** - Bluetooth SIG Assigned Numbers (public repository).
+  Both are fetched by `tools/gen_vendor_tables.py` into `firmware-cyd/include/vendor_db_data.h`.
+
 ## Hardware community
 - **witnessmenow / ESP32-Cheap-Yellow-Display** — board docs and the "CYD" name.
 - **skizzophrenic / SquachWatch-CYD** — related detector for the same board.

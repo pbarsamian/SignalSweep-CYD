@@ -23,7 +23,7 @@ company_identifiers.yaml, service_uuids.yaml, member_uuids.yaml
 import argparse, csv, io, os, re, sys, unicodedata, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "include", "vendor_db_data.h")
+OUT = os.path.join(HERE, "..", "firmware-cyd", "include", "vendor_db_data.h")
 
 IEEE = {
     "oui.csv":   ["https://standards-oui.ieee.org/oui/oui.csv"],

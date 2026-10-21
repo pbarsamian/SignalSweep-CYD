@@ -8,6 +8,7 @@
 #include "theme.h"
 #include "model.h"
 #include "mode.h"
+#include "vendor.h"
 #include <stdarg.h>
 
 extern TFT_eSPI tft;                 // owned by status_ui.cpp
@@ -239,10 +240,11 @@ static const uint8_t CH5[] = { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 11
                                132, 136, 140, 144, 149, 153, 157, 161, 165 };
 #define N5 ((int)sizeof(CH5))
 
-// Company IDs we can name without a database: the ones our own rules reference (Apple is the
-// 0x004C in the AirTag logic; Luxottica, Snap and Flipper are rule entries) plus a few very common ones.
+// Bluetooth SIG company name: the generated database first, then the few names our own rules use
+// (so they still show if the database is the small fallback).
 const char* company_name_ui(uint16_t id);
 static const char* company_name(uint16_t id) {
+    if (const char* v = vendor_for_company(id)) return v;
     switch (id) {
         case 0x004C: return "Apple";
         case 0x0006: return "Microsoft";
@@ -256,6 +258,16 @@ static const char* company_name(uint16_t id) {
 }
 
 const char* company_name_ui(uint16_t id) { return company_name(id); }
+
+// IEEE vendor for a "AA:BB:.." MAC. Locally administered (randomised) addresses carry no vendor.
+static const char* mac_vendor(const char* mac) {
+    unsigned b[6];
+    if (sscanf(mac, "%x:%x:%x:%x:%x:%x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]) != 6) return nullptr;
+    if (b[0] & 0x02) return nullptr;
+    uint8_t m[6];
+    for (int i = 0; i < 6; i++) m[i] = (uint8_t)b[i];
+    return vendor_for_mac(m);
+}
 
 template <class G>
 static void draw_ble_canvas(G& g, int sx, int sy, int sw, int sh) {
@@ -646,7 +658,10 @@ static void add_profile_rows(const Det& d) {
     if (p.has_txp) ROW("TX power", "%d dBm", p.txp);
     if (p.has_appear) ROW("Appearance", "0x%04X", p.appear);
     if (p.has_apple) ROW("Apple", "Continuity type 0x%02X", p.apple);
-    for (int i = 0; i < p.nsvc; i++) ROW("Service", "0x%04X", p.svc[i]);
+    for (int i = 0; i < p.nsvc; i++) {
+        const char* sn = name_for_uuid16(p.svc[i]);
+        if (sn) ROW("Service", "%s (0x%04X)", sn, p.svc[i]); else ROW("Service", "0x%04X", p.svc[i]);
+    }
     if (p.hidden) ROW("SSID", "(hidden network)");
     if (p.probe[0]) ROW("Probing for", "%s", p.probe);
     if (p.wifi) {
@@ -721,6 +736,7 @@ static void build_rows(const Det& d, uint32_t now) {
     ROW("Type", "%s", TNAME[d.type]);
     ROW("Confidence", "%d%% %s", d.conf, d.conf >= 75 ? "Confirmed" : d.conf >= 45 ? "Likely" : "Possible");
     ROW("MAC", "%s", d.mac);
+    if (const char* v = mac_vendor(d.mac)) ROW("MAC vendor", "%s", v);
     if (d.radio == 1) ROW("Radio", "BLE");
     else if (d.radio == 2) ROW("Radio", "Wi-Fi + BLE");
     else ROW("Radio", "Wi-Fi %s ch%d", d.band == 5 ? "5 GHz" : "2.4 GHz", d.ch);
@@ -812,7 +828,8 @@ static void build_links(const Det& d) {
         for (int i = 0; i < g_fv.npeers; i++) {
             const FvPeer& p = g_fv.peers[i];
             if (p.role == 0) continue;
-            lrow_peer(C_ACCENT, 0, g_fv.ch, p.rssi, p.mac, "%s %s", p.role == 2 ? "AP " : "STA", p.mac);
+            const char* pv = mac_vendor(p.mac);
+            lrow_peer(C_ACCENT, 0, g_fv.ch, p.rssi, p.mac, "%s %s %.10s", p.role == 2 ? "AP " : "STA", p.mac, pv ? pv : "");
             any = true;
         }
         if (!any) lrow(LR_INFO, C_MDGREY, "No AP/client links seen yet");

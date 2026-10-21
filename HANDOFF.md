@@ -151,7 +151,7 @@
   LED from RSSI_TICK events) are live; CAP stays a toast (SD capture, issue #10). Wi-Fi APs on the SCOPE 2.4/5 GHz views are
   tappable rows that open and focus the AP. Wire details in PROTOCOL.md section 3b-3. Verified on hardware: BLE focus (advert
   payload, RSSI ticks), Wi-Fi focus on a 5 GHz AP (50 frames, 261 data headers, 12 peers), release, lease lapse, AP tap, pivot.
-  Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, vendor names for peers (no OUI db yet).
+  Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, (vendor names for peers now done, see Vendor database).
   Console test keys on the CYD: f focus first detection, F focus strongest AP, r release, k print the focus view.
 - Scan scheduler (issue #3): sched.* on the C5 splits the one radio between Wi-Fi and BLE. CONCURRENT (BLE window 10..90 %) or SLICED
   (exclusive Wi-Fi / BLE slots); focus mode locks it (Wi-Fi focus = BLE paused, BLE focus = Wi-Fi receive paused). The CYD holds four
@@ -182,8 +182,11 @@
 
 ## Vendor database
 - platformio.ini uses huge_app.csv (3 MB app, no OTA) — CHECK flash % in build output
-- Shipped include/vendor_db_data.h is a small fallback (VENDOR_DB_FULL 0)
-- Run once with internet:  python tools/gen_vendor_tables.py
+- Lookup lives on the CYD (firmware-cyd/src/vendor.cpp); the C5 sends raw MACs / company IDs and never needs names.
+- firmware-cyd/include/vendor_db_data.h is the FULL generated database (VENDOR_DB_FULL 1: 40357 MA-L, 6644 MA-M, 7239 MA-S,
+  4051 BT company IDs, 799 16-bit UUIDs, generated 2026-10-20), about 1 MB of flash: the CYD build is 46 % of the 3 MB partition.
+- INFO shows "MAC vendor" (not for locally administered / randomised MACs), BT company and service names; LINKS peers show a vendor.
+- Refresh with internet:  python tools/gen_vendor_tables.py  (writes firmware-cyd/include/vendor_db_data.h)
   (IEEE MA-L/MA-M/MA-S CSVs + Bluetooth SIG company/UUID YAML; --local DIR offline)
 
 ## Not yet ported from upstream
