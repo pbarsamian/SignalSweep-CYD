@@ -206,12 +206,16 @@ static uint8_t parse_rsn(const uint8_t* e, int len) {
 }
 
 // ---- the promiscuous callback (runs in the Wi-Fi task: keep it light) ----------
-static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
+// The engine's verdict on the management frame being handled, for the capture annotation (Wi-Fi task only).
+static const char* s_ann_rule = nullptr;
+static int s_ann_conf = 0, s_ann_best = 0;
+
+static void promisc_inner(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (type == WIFI_PKT_DATA) {                       // only delivered while a focus is active (filter widened)
         auto* dp = (wifi_promiscuous_pkt_t*)buf;
         focus_note_wifi_data(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi);
         opennet_note(dp->payload, dp->rx_ctrl.sig_len);      // no-op unless the owner switched open-network profiling on
-        capture_note(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi, dp->rx_ctrl.channel, false);   // no-op unless capturing
+        capture_note(dp->payload, dp->rx_ctrl.sig_len, dp->rx_ctrl.rssi, dp->rx_ctrl.channel, false, nullptr, 0, 0);   // no-op unless capturing
         return;
     }
     if (type != WIFI_PKT_MGMT) return;
@@ -223,7 +227,6 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
     int rxCh   = pkt->rx_ctrl.channel;
     if (length < 24) return;
     focus_note_wifi_mgmt(payload, length, rssi);        // no-op unless focused on a Wi-Fi target
-    capture_note(payload, length, rssi, rxCh, true);    // no-op unless capturing
 
     uint8_t fsubtype = (payload[0] >> 4) & 0x0F;
     uint8_t* addr1 = payload + 4;
@@ -237,6 +240,7 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
         if (g_cfg.detect_drone &&
             odid_wifi_receive_message_pack_nan_action_frame(&s_wifiUas, nanMac, payload, length) == 0 &&
             odid_useful(s_wifiUas)) {
+            s_ann_rule = "Remote ID Drone"; s_ann_conf = W_DRONE; s_ann_best = W_DRONE;
             post((const uint8_t*)nanMac, rssi, rxCh, "Remote ID Drone", "Drone", W_DRONE, W_DRONE, true, nullptr);
         }
         return;
@@ -392,7 +396,19 @@ static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
         wi.sec = rsn ? rsnSec : wpa1 ? (uint8_t)SEC_WPA : privacy ? (uint8_t)SEC_WEP : (uint8_t)SEC_OPEN;
         memcpy(wi.ssid, foundSsid, sizeof(wi.ssid));
     }
+    s_ann_rule = rule; s_ann_conf = conf; s_ann_best = best;
     post(addr2, rssi, dsCh ? dsCh : rxCh, rule, cat, conf, best, drone, &wi);
+}
+
+// Runs the handler, then hands a captured management frame to the capture queue with the verdict it got.
+static void promisc(void* buf, wifi_promiscuous_pkt_type_t type) {
+    s_ann_rule = nullptr; s_ann_conf = s_ann_best = 0;
+    promisc_inner(buf, type);
+    if (type != WIFI_PKT_MGMT) return;
+    auto* pkt = (wifi_promiscuous_pkt_t*)buf;
+    if (pkt->rx_ctrl.sig_len >= 24)
+        capture_note(pkt->payload, pkt->rx_ctrl.sig_len, pkt->rx_ctrl.rssi, pkt->rx_ctrl.channel, true,
+                     s_ann_rule, s_ann_conf, s_ann_best);   // no-op unless capturing
 }
 
 // ---- channel hopping --------------------------------------------------------------

@@ -393,7 +393,7 @@ void dispatch_tick(void) {
             if (dt > 200) dt = 200;
             cap_budget += (int32_t)dt * 8;
             if (cap_budget > 1600) cap_budget = 1600;
-            if (cap_budget >= 480 || capture_pending() == 0) {     // a record can be up to 412 bytes
+            if (cap_budget >= 480 || capture_pending() == 0) {     // a record can be up to 439 bytes
                 static uint8_t cb[480];
                 static uint8_t ob[640];
                 bool act = false, endf = false;

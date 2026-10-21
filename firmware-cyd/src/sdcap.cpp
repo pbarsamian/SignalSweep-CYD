@@ -13,6 +13,7 @@
 #endif
 
 #define CAP_REC_HDR 12            // matches firmware-c5/main/capture.h
+#define CAP_F_NOTE  0x08          // flags bit 3: an annotation (rule verdict) follows the data
 #define STOP_WAIT_MS 4000
 
 static bool     s_mounted = false;
@@ -112,7 +113,8 @@ static void write_headers(const char* desc) {
     p32(idb);
 }
 
-static void write_epb(uint32_t t_ms, uint8_t ch, int8_t rssi, const uint8_t* fr, uint16_t caplen, uint16_t origlen) {
+// cm: the signature engine's verdict on this frame (packet comment), or null when nothing matched.
+static void write_epb(uint32_t t_ms, uint8_t ch, int8_t rssi, const uint8_t* fr, uint16_t caplen, uint16_t origlen, const char* cm) {
     if (!s_have_t0) { s_have_t0 = true; s_t0 = t_ms; }
     uint64_t us = (uint64_t)(uint32_t)(t_ms - s_t0) * 1000ULL;
     uint16_t freq = ch <= 13 ? (uint16_t)(2412 + 5 * (ch - 1)) : ch == 14 ? 2484 : (uint16_t)(5000 + 5 * ch);
@@ -122,11 +124,12 @@ static void write_epb(uint32_t t_ms, uint8_t ch, int8_t rssi, const uint8_t* fr,
                        (uint8_t)freq, (uint8_t)(freq >> 8), (uint8_t)cflags, (uint8_t)(cflags >> 8),
                        (uint8_t)rssi };
     uint32_t cap = 15 + caplen, orig = 15 + origlen;
-    uint32_t total = 32 + ((cap + 3) & ~3u);
+    uint32_t total = 32 + ((cap + 3) & ~3u) + (cm ? (uint32_t)opt_size(strlen(cm)) + 4 : 0);
     p32(6); p32(total); p32(0); p32((uint32_t)(us >> 32)); p32((uint32_t)us); p32(cap); p32(orig);
     put(rt, sizeof(rt));
     put(fr, caplen);
     pad4(cap);
+    if (cm) { opt_str(1, cm); p16(0); p16(0); }                          // opt_comment, opt_endofopt
     p32(total);
     s_st.frames++;
 }
@@ -134,7 +137,7 @@ static void write_epb(uint32_t t_ms, uint8_t ch, int8_t rssi, const uint8_t* fr,
 // One BLE advert as a link-layer packet (linktype 251): access address, header, AdvA [InitA] data, CRC.
 // The scan reports adverts, not packets, so the header is rebuilt from the report and the CRC is zeros.
 // rec_flags: bit 1 TxAdd, bit 2 RxAdd, bits 4..7 PDU type (see firmware-c5/main/capture.h).
-static void write_ble_epb(uint32_t t_ms, int8_t rssi, uint8_t rec_flags, const uint8_t* body, uint16_t blen) {
+static void write_ble_epb(uint32_t t_ms, int8_t rssi, uint8_t rec_flags, const uint8_t* body, uint16_t blen, const char* verdict) {
     if (!s_have_t0) { s_have_t0 = true; s_t0 = t_ms; }
     uint64_t us = (uint64_t)(uint32_t)(t_ms - s_t0) * 1000ULL;
     uint8_t pdu[4 + 2 + 43 + 3] = { 0xD6, 0xBE, 0x89, 0x8E };            // advertising access address 0x8E89BED6, LSB first
@@ -143,8 +146,8 @@ static void write_ble_epb(uint32_t t_ms, int8_t rssi, uint8_t rec_flags, const u
     pdu[5] = (uint8_t)blen;
     memcpy(pdu + 6, body, blen);
     uint32_t cap = 6 + blen + 3;                                         // the 3 CRC bytes stay zero
-    char cm[24];
-    snprintf(cm, sizeof(cm), "RSSI %d dBm", (int)rssi);
+    char cm[96];
+    snprintf(cm, sizeof(cm), "RSSI %d dBm%s%s", (int)rssi, verdict ? "; " : "", verdict ? verdict : "");
     uint32_t total = 32 + ((cap + 3) & ~3u) + (uint32_t)opt_size(strlen(cm)) + 4;
     p32(6); p32(total); p32(0); p32((uint32_t)(us >> 32)); p32((uint32_t)us); p32(cap); p32(cap);
     put(pdu, cap);
@@ -191,7 +194,8 @@ static void write_sidecar(void) {
         t.printf("Timestamps are microseconds since the first advert: the device has no clock.\r\n");
         t.printf("Passive scan: only the target's adverts are here, rebuilt as link-layer packets (header from the scan report,\r\n");
         t.printf("access address 0x8E89BED6). The CRC is zeros, so Wireshark shows it as unverified. A passive scan never\r\n");
-        t.printf("receives scan responses. Each packet's comment holds the RSSI the C5 measured.\r\n\r\n");
+        t.printf("receives scan responses. Each packet's comment holds the RSSI the C5 measured and, when a signature rule matched\r\n");
+        t.printf("that advert, the rule and its confidence.\r\n\r\n");
         t.printf("Wireshark display filter (adverts from the target):\r\n  btle.advertising_address == %s\r\n", lm);
         t.close();
         return;
@@ -283,13 +287,29 @@ void sdcap_event(const uint8_t* cb, size_t n) {
         while (left >= CAP_REC_HDR) {
             uint32_t t = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
             uint16_t caplen = (uint16_t)(p[8] | (p[9] << 8)), origlen = (uint16_t)(p[10] | (p[11] << 8));
-            if (CAP_REC_HDR + (size_t)caplen > left) break;
-            if (!s_failed) {
-                if (p[6] == 2) { if (s_ble) write_ble_epb(t, (int8_t)p[5], p[7], p + CAP_REC_HDR, caplen); }
-                else if (!s_ble) write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen);
+            size_t rec = CAP_REC_HDR + (size_t)caplen;
+            char verdict[64];
+            const char* vp = nullptr;
+            if (p[7] & CAP_F_NOTE) {                                     // annotation: u8 conf, u8 best, u8 rlen, rule
+                if (rec + 3 > left) break;
+                const uint8_t* an = p + rec;
+                size_t rl = an[2];
+                if (rec + 3 + rl > left) break;
+                char rule[28];
+                size_t k = rl < sizeof(rule) - 1 ? rl : sizeof(rule) - 1;
+                memcpy(rule, an + 3, k);
+                rule[k] = 0;
+                snprintf(verdict, sizeof(verdict), "Rule: %s (strongest %u, total %u)", rule, an[1], an[0]);
+                vp = verdict;
+                rec += 3 + rl;
             }
-            p += CAP_REC_HDR + caplen;
-            left -= CAP_REC_HDR + caplen;
+            if (rec > left) break;
+            if (!s_failed) {
+                if (p[6] == 2) { if (s_ble) write_ble_epb(t, (int8_t)p[5], p[7], p + CAP_REC_HDR, caplen, vp); }
+                else if (!s_ble) write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen, vp);
+            }
+            p += rec;
+            left -= rec;
         }
     }
     if (s_failed) { finish(s_msg); return; }

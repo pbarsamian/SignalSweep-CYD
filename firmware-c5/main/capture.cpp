@@ -15,6 +15,8 @@ static volatile bool s_en = false;                      // accepting frames
 static volatile bool s_ending = false;                  // stopped: drain the queue, then report the end
 static uint32_t s_dropped = 0;
 
+#define CAP_F_NOTE 0x08                                 // flags bit 3: an annotation follows the data
+
 static uint32_t ms_now(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 
 static void ring_put(const uint8_t* p, size_t n) {
@@ -76,7 +78,32 @@ static int data_hdr_len(const uint8_t* f) {
     return h;
 }
 
-void capture_note(const uint8_t* f, int length, int rssi, int ch, bool is_mgmt) {
+// Queue one record: header, data, and the optional annotation. Drops (and counts) it if the ring is full.
+static void queue_record(uint8_t* hdr, const uint8_t* data, size_t n, const char* rule, int conf, int best) {
+    uint8_t note[3 + CAP_RULE_MAX];
+    size_t nl = 0;
+    if (rule && rule[0]) {
+        size_t rl = strlen(rule);
+        if (rl > CAP_RULE_MAX) rl = CAP_RULE_MAX;
+        note[0] = (uint8_t)(conf < 0 ? 0 : conf > 255 ? 255 : conf);
+        note[1] = (uint8_t)(best < 0 ? 0 : best > 255 ? 255 : best);
+        note[2] = (uint8_t)rl;
+        memcpy(note + 3, rule, rl);
+        nl = 3 + rl;
+        hdr[7] |= CAP_F_NOTE;
+    }
+    portENTER_CRITICAL(&s_mux);
+    if (s_en && CAP_REC_HDR + n + nl <= RING_SZ - s_used) {
+        ring_put(hdr, CAP_REC_HDR);
+        ring_put(data, n);
+        if (nl) ring_put(note, nl);
+    } else {
+        s_dropped++;
+    }
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void capture_note(const uint8_t* f, int length, int rssi, int ch, bool is_mgmt, const char* rule, int conf, int best) {
     if (!s_en || length < 28 || !focus_is_wifi()) return;     // a BLE focus must not pick up a Wi-Fi frame that shares its MAC
     if (!focus_matches(f + 4) && !focus_matches(f + 10) && !focus_matches(f + 16)) return;   // the focused target's frames only
     int orig = length - 4;                                // without the FCS
@@ -98,18 +125,11 @@ void capture_note(const uint8_t* f, int length, int rssi, int ch, bool is_mgmt) 
     hdr[7] = flags;
     hdr[8] = (uint8_t)cap; hdr[9] = (uint8_t)(cap >> 8);
     hdr[10] = (uint8_t)orig; hdr[11] = (uint8_t)(orig >> 8);
-    portENTER_CRITICAL(&s_mux);
-    if (s_en && (size_t)(CAP_REC_HDR + cap) <= RING_SZ - s_used) {
-        ring_put(hdr, CAP_REC_HDR);
-        ring_put(f, (size_t)cap);
-    } else {
-        s_dropped++;
-    }
-    portEXIT_CRITICAL(&s_mux);
+    queue_record(hdr, f, (size_t)cap, rule, conf, best);
 }
 
 void capture_note_ble(const uint8_t mac[6], uint8_t addr_type, uint8_t evtype, int rssi, const uint8_t* data,
-                      size_t len, const uint8_t direct_a[6], uint8_t direct_type) {
+                      size_t len, const uint8_t direct_a[6], uint8_t direct_type, const char* rule, int conf, int best) {
     if (!s_en || !focus_is_ble() || !focus_matches(mac) || evtype > 4) return;
     static const uint8_t pdu_of[5] = { 0, 1, 6, 2, 4 };   // NimBLE event type -> link-layer PDU type
     bool direct = evtype == 1;
@@ -128,14 +148,7 @@ void capture_note_ble(const uint8_t mac[6], uint8_t addr_type, uint8_t evtype, i
     hdr[7] = (uint8_t)(((addr_type & 1) ? 2 : 0) | ((direct && (direct_type & 1)) ? 4 : 0) | (pdu_of[evtype] << 4));
     hdr[8] = (uint8_t)n; hdr[9] = (uint8_t)(n >> 8);
     hdr[10] = (uint8_t)n; hdr[11] = (uint8_t)(n >> 8);
-    portENTER_CRITICAL(&s_mux);
-    if (s_en && CAP_REC_HDR + n <= RING_SZ - s_used) {
-        ring_put(hdr, CAP_REC_HDR);
-        ring_put(body, n);
-    } else {
-        s_dropped++;
-    }
-    portEXIT_CRITICAL(&s_mux);
+    queue_record(hdr, body, n, rule, conf, best);
 }
 
 size_t capture_pending(void) { return s_used; }
@@ -148,6 +161,12 @@ size_t capture_pop(uint8_t* out, size_t cap, bool* active, bool* end, uint32_t* 
         uint8_t h[CAP_REC_HDR];
         ring_peek(0, h, CAP_REC_HDR);
         size_t rec = CAP_REC_HDR + (size_t)(h[8] | (h[9] << 8));
+        if (h[7] & CAP_F_NOTE) {                          // annotation: u8 conf, u8 best, u8 rlen, rule
+            if (rec + 3 > s_used) break;
+            uint8_t rl;
+            ring_peek(rec + 2, &rl, 1);
+            rec += 3 + rl;
+        }
         if (n + rec > cap || rec > s_used) break;
         ring_peek(0, out + n, rec);
         s_tail = (s_tail + rec) % RING_SZ;
