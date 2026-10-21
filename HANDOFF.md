@@ -157,7 +157,9 @@
   Not done: WPS identity rows (the C5 does not parse WPS yet), the CORRELATED tier of LINKS, (vendor names for peers now done, see Vendor database).
   Open-network profiling (issue #11): SET > PROFILE switch (off at every boot, C5 also resets it on HELLO); when on, a Wi-Fi focus
   reads unencrypted data frames only for DHCP hostname/vendor class, mDNS responses and SSDP NOTIFY SERVER plus port tallies (see PROTOCOL.md
-  3b-3). Shown on INFO of the device and in the TRAFF page. Code: firmware-c5/main/opennet.*. NOT yet tested on a real open network.
+  3b-3). Shown on INFO of the device and in the TRAFF page. Code: firmware-c5/main/opennet.*. Verified 2026-10-20 on an open Android hotspot (GalaxyS22, ch11) with a second phone: DHCP hostname and
+  vendor class, port tallies, the TRAFF section and the pivot to INFO. NOT yet exercised: mDNS names, SSDP SERVER, TCP tallies,
+  and an encrypted network with live traffic (the Protected-bit skip is untested against real encrypted data).
   Console test keys on the CYD: f focus first detection, F focus strongest AP, r release, k print the focus view.
 - Scan scheduler (issue #3): sched.* on the C5 splits the one radio between Wi-Fi and BLE. CONCURRENT (BLE window 10..90 %) or SLICED
   (exclusive Wi-Fi / BLE slots); focus mode locks it (Wi-Fi focus = BLE paused, BLE focus = Wi-Fi receive paused). The CYD holds four
