@@ -225,7 +225,7 @@ bit 2 RxAdd, bits 4..7 link-layer PDU type), u16 caplen, u16 origlen (without th
 scan does not report the advertising channel) and `data` is AdvA (6 bytes, over-the-air order), then InitA (6 bytes) for ADV_DIRECT_IND only,
 then the advertising data (<= 31 bytes). The CYD rebuilds each advert as a link-layer packet (LINKTYPE_BLUETOOTH_LE_LL 251: access address
 0x8E89BED6, header, AdvA and data, CRC = zeros because it is unknown) with the RSSI in the packet comment. A passive scan never receives scan
-responses, so none are captured. **Annotation:** when `flags` bit 3 (0x08) is set, `u8 conf, u8 best, u8 rlen, char rule[rlen]` follow `data`
+responses, so none are captured. **Pre-trigger mark:** `flags` bit 7 (0x80) marks a record heard before REC: while a focus is active the C5 keeps the target's recent frames in a 16 KB RAM ring (8 KB if the heap is short; allocated at focus start, freed at focus end), and REC streams it ahead of the live frames. The CYD writes `pre-trigger (before REC)` as the packet comment and counts them in the sidecar. **Annotation:** when `flags` bit 3 (0x08) is set, `u8 conf, u8 best, u8 rlen, char rule[rlen]` follow `data`
 (rule <= 24 bytes): the signature engine's verdict on that one frame or advert (summed weight, strongest single signal, rule name). The CYD
 writes it as the packet comment, `Rule: <name> (strongest N, total M)`. Frames that matched nothing, and all data frames, carry none. After `cap:false` or the end of the focus the C5 drains its queue and
 sends one final event with `e:true`. Code: `firmware-c5/main/capture.*` and `firmware-cyd/src/sdcap.*`. The CYD writes a pcapng

@@ -23,6 +23,7 @@
 //   u16 origlen frame length without the FCS (BLE: equals caplen)
 //   u8  data[caplen]  Wi-Fi: the 802.11 frame. BLE: AdvA (6 bytes, over-the-air order), then InitA (6 bytes) for
 //                     ADV_DIRECT_IND only, then the advertising data
+//   flags bit 7 (0x80) marks a record that was heard before REC (it came out of the pre-trigger ring).
 //   If flags bit 3 (0x08) is set an annotation follows the data: u8 conf (summed weight, capped at 255), u8 best
 //   (the strongest single signal), u8 rlen, char rule[rlen] (the matched rule name, <= CAP_RULE_MAX, no
 //   terminator). It is the signature engine's verdict on that one frame or advert; non-matching ones carry none.
@@ -39,7 +40,14 @@ extern "C" {
 #define CAP_MAX_MGMT  400            // management frames larger than this are truncated
 #define CAP_RULE_MAX  24             // longest rule name carried in an annotation
 
-void   capture_set_enabled(bool on);               // CYD request; only takes effect with a focus
+// Pre-trigger ring (issue #10): while a focus is active the target's frames roll into a 16 KB RAM ring (8 KB if the
+// heap is short), oldest overwritten, nothing sent. REC freezes it and streams it ahead of the live frames, so the
+// capture starts up to 16 KB before the tap. The ring is allocated when a focus starts and freed when it ends (or
+// when the capture that was draining it finishes): it only ever holds that one target's frames, and never outlives
+// the focus. Data frames are already cut to their header when they enter it.
+void   capture_focus_begin(void);                  // a focus has started: allocate the ring
+void   capture_focus_end(void);                    // the focus has ended: free it (unless a capture is still draining it)
+void   capture_set_enabled(bool on);              // CYD request; only takes effect with a focus
 void   capture_end(void);                          // the focus ended: drain what is queued, then report inactive
 void   capture_abort(void);                        // new session: drop everything now
 bool   capture_enabled(void);

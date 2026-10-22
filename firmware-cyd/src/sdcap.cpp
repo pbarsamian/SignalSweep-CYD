@@ -14,6 +14,7 @@
 
 #define CAP_REC_HDR 12            // matches firmware-c5/main/capture.h
 #define CAP_F_NOTE  0x08          // flags bit 3: an annotation (rule verdict) follows the data
+#define CAP_F_PRE   0x80          // flags bit 7: heard before REC (the pre-trigger ring)
 #define STOP_WAIT_MS 4000
 
 static bool     s_mounted = false;
@@ -33,6 +34,7 @@ static uint32_t   s_last_flush = 0, s_stop_ms = 0;
 static char       s_mac[18] = {}, s_label[33] = {};
 static uint8_t    s_ch = 0;
 static bool       s_ble = false;
+static uint32_t   s_pre_frames = 0;          // frames written that were heard before REC
 static bool       s_failed = false;
 
 SdCapState sdcap_state(void) { return s_state; }
@@ -142,7 +144,7 @@ static void write_ble_epb(uint32_t t_ms, int8_t rssi, uint8_t rec_flags, const u
     uint64_t us = (uint64_t)(uint32_t)(t_ms - s_t0) * 1000ULL;
     uint8_t pdu[4 + 2 + 43 + 3] = { 0xD6, 0xBE, 0x89, 0x8E };            // advertising access address 0x8E89BED6, LSB first
     if (blen > 43) blen = 43;
-    pdu[4] = (uint8_t)((rec_flags >> 4) | ((rec_flags & 2) ? 0x40 : 0) | ((rec_flags & 4) ? 0x80 : 0));
+    pdu[4] = (uint8_t)(((rec_flags >> 4) & 0x07) | ((rec_flags & 2) ? 0x40 : 0) | ((rec_flags & 4) ? 0x80 : 0));   // PDU types are <= 6: bit 7 is the pre-trigger mark
     pdu[5] = (uint8_t)blen;
     memcpy(pdu + 6, body, blen);
     uint32_t cap = 6 + blen + 3;                                         // the 3 CRC bytes stay zero
@@ -189,6 +191,8 @@ static void write_sidecar(void) {
     if (s_ble) t.printf("Radio:    BLE (the scan does not report the advertising channel)\r\n");
     else t.printf("Channel:  %u (%s)\r\n", s_ch, s_ch >= 36 ? "5 GHz" : "2.4 GHz");
     t.printf("Frames:   %lu written, %lu dropped by the C5 (its queue was full)\r\n", (unsigned long)s_st.frames, (unsigned long)s_st.dropped);
+    t.printf("Pre-trigger: the first %lu frames were heard before REC was tapped (up to 16 KB kept in the C5's RAM while focused);\r\n", (unsigned long)s_pre_frames);
+    t.printf("             each carries the packet comment 'pre-trigger (before REC)'.\r\n");
     t.printf("Firmware: CYD %s\r\n\r\n", FW_VERSION);
     if (s_ble) {
         t.printf("Timestamps are microseconds since the first advert: the device has no clock.\r\n");
@@ -253,6 +257,7 @@ bool sdcap_start(const char* mac, const char* label, uint8_t ch, bool ble) {
     snprintf(s_label, sizeof(s_label), "%s", label ? label : "");
     s_ch = ch;
     s_ble = ble;
+    s_pre_frames = 0;
     s_sl = 0; s_failed = false; s_have_t0 = false; s_msg[0] = 0;
     char desc[64];
     if (ble) snprintf(desc, sizeof(desc), "BLE adverts from %s", s_mac);
@@ -304,9 +309,16 @@ void sdcap_event(const uint8_t* cb, size_t n) {
                 rec += 3 + rl;
             }
             if (rec > left) break;
+            char cm[96];
+            if (p[7] & CAP_F_PRE) {                                      // heard before REC: say so in the packet comment
+                snprintf(cm, sizeof(cm), "pre-trigger (before REC)%s%s", vp ? "; " : "", vp ? vp : "");
+                vp = cm;
+            }
             if (!s_failed) {
-                if (p[6] == 2) { if (s_ble) write_ble_epb(t, (int8_t)p[5], p[7], p + CAP_REC_HDR, caplen, vp); }
-                else if (!s_ble) write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen, vp);
+                bool wrote = false;
+                if (p[6] == 2) { if (s_ble) { write_ble_epb(t, (int8_t)p[5], p[7], p + CAP_REC_HDR, caplen, vp); wrote = true; } }
+                else if (!s_ble) { write_epb(t, p[4], (int8_t)p[5], p + CAP_REC_HDR, caplen, origlen, vp); wrote = true; }
+                if (wrote && (p[7] & CAP_F_PRE)) s_pre_frames++;
             }
             p += rec;
             left -= rec;

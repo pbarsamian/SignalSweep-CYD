@@ -59,6 +59,7 @@ static void focus_stop_impl(const char* why, bool keep_onet) {
     if (!focus_active()) return;
     focus_stop(why);
     capture_end();                                   // a capture follows the focus: drain what is queued, then report the end
+    capture_focus_end();                             // frees the pre-trigger ring unless a capture is still draining it
     if (!keep_onet) opennet_clear();                 // what a focus learned about a network never outlives it
     radio_wifi_set_data_filter(false);
     sched_lock(SCHED_LOCK_NONE);
@@ -166,6 +167,7 @@ int det_focus_request(const uint8_t* a, size_t n, ss_cbor_w_t* w) {
 
     focus_stop_impl("retarget", wifi && focus_is_wifi());      // Wi-Fi to Wi-Fi keeps the open-network table
     focus_start(mac, wifi, (uint8_t)ch);
+    capture_focus_begin();                                  // pre-trigger ring: the target's frames roll into it until REC
     if (wifi) radio_wifi_set_data_filter(true);
     sched_lock(wifi ? SCHED_LOCK_WIFI : SCHED_LOCK_BLE);   // park the radio on the target's side
     focus_reply(w);

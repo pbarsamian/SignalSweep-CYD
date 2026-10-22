@@ -173,7 +173,16 @@
   (`boot_ms,type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,times_heard`, CRLF; boot_ms = ms since the CYD booted, no
   clock; written by the same task as captures so the SD bus is never shared). Console key `d` prints the file over serial between
   `[alerts] --- begin/end ---` markers. Verified 2026-10-21 on hardware: 53 rows (46 Apple Find My, 5 Tile, 2 Google), every row 12
-  columns, the dump's byte count matched the file size. NOT yet: the 16 KB pre-trigger ring (the last open item of #10). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
+  columns, the dump's byte count matched the file size. Pre-trigger ring (phase 3, last part of #10): while a focus is active the C5 keeps the
+  target's recent frames in a RAM ring (16 KB, 8 KB if the heap is short; malloc at focus start, freed at focus end or when the
+  capture that was draining it finishes; capture.cpp). REC freezes it and streams it ahead of the live frames; those records carry flag
+  bit 7 and the CYD writes the packet comment `pre-trigger (before REC)` and a count in the sidecar. Heap (C5, measured 2026-10-21 with
+  the 5 s `heap:` log line): idle free 42.9 KB, lowest 38.6 KB, largest block 22.5 KB; with a Wi-Fi focus (open-network profiling on or off: no
+  difference, its tables are static) 45.5 KB free; with the 16 KB ring allocated 29.0 KB free, lowest 26.1 KB, largest block 15.4 KB, steady.
+  Verified on hardware: cap_007, a GalaxyS22 hotspot capture of 302 frames (16.2 s): 74 frames marked pre-trigger, contiguous at the start,
+  spanning 5.0 s, then 228 live frames over 11 s; sidecar count 74 matched; 0 dropped. NOT yet verified: that the ring is freed when the focus is
+  released (heap back to ~42.9 KB), BLE pre-trigger, and a retarget while a capture drains (drops the old target's undrained pre-trigger frames).
+  Trigger = the tap on REC (not "before the first alert"). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
   LIST page (issue #14): two control bars (type chips; radio, ALERTS, sort, "N of M"), a filtered and sorted index of its own
   (`list_build` in ui.cpp; SCOPE keeps the unfiltered `visible_index`), its own scroll offset, a page-per-tap scroll strip whose track
   jumps proportionally. Filter and sort are session-only. 6 rows visible. All 8 on-device checks passed 2026-10-21.
