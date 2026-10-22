@@ -10,6 +10,7 @@
 #include "mode.h"
 #include "vendor.h"
 #include "sdcap.h"
+#include "listexport.h"
 #include "about_credits.h"     // generated from CREDITS.md by about_pre.py
 #include <stdarg.h>
 
@@ -250,6 +251,7 @@ static int visible_index(int nth) {          // the nth visible detection's slot
 #define LIST_TOP     (PAGE_Y + LIST_BAR_H)
 #define LIST_ROWS    ((PAGE_H - LIST_BAR_H) / ROW_H)
 #define LIST_CHIP_W  51
+#define LIST_SAVE_X  252                             // SAVE button on bar 2: exports the list as shown
 static uint8_t s_lidx[MODEL_MAX_DETS];               // the last built list: slots into g_model.dets, in display order
 static int     s_ln = 0;
 
@@ -278,6 +280,23 @@ static void list_build() {
         while (k > 0 && list_before(g_model.dets[i], g_model.dets[s_lidx[k - 1]])) { s_lidx[k] = s_lidx[k - 1]; k--; }   // stable insertion
         s_lidx[k] = (uint8_t)i;
     }
+}
+
+// SAVE: write what the LIST page is showing (current filter and sort) to the SD card as CSV + JSON (issue #15, schema v1 in PROTOCOL.md).
+// MAC addresses are written in full: a deliberate local save. The format also supports the manufacturer prefix only, or none.
+static void list_save() {
+    list_build();
+    static const Det* rows[MODEL_MAX_DETS];
+    int n = 0;
+    for (int i = 0; i < s_ln && n < MODEL_MAX_DETS; i++) rows[n++] = &g_model.dets[s_lidx[i]];
+    static const char* const RADN[] = { "wifi+ble", "wifi", "ble" };
+    static const char* const SRTN[] = { "strongest", "newest", "confidence" };
+    char flt[64];
+    snprintf(flt, sizeof(flt), "type=%s radio=%s%s sort=%s", s_lf_type ? TNAME[s_lf_type - 1] : "all", RADN[s_lf_radio],
+             s_lf_alerts ? " alerts-only" : "", SRTN[s_lsort]);
+    char msg[40];
+    listexport_save(rows, n, LMAC_FULL, flt, msg, sizeof(msg));
+    toast(msg);
 }
 
 static int rssi_bars(int rssi) { return rssi >= -60 ? 5 : rssi >= -70 ? 4 : rssi >= -80 ? 3 : rssi >= -90 ? 2 : 1; }
@@ -611,11 +630,12 @@ static void draw_list_bars(int shown, int total) {
     list_btn(60, y, 62, 17, "ALERTS", s_lf_alerts, C_WARN);
     list_btn(124, y, 92, 17, SRT[s_lsort], s_lsort != 0, C_ACCENT);
     char cb[16];
-    snprintf(cb, sizeof(cb), "%d of %d", shown, total);
-    tft.fillRect(218, y, SCREEN_W - 14 - 218, 17, C_BLACK);
+    snprintf(cb, sizeof(cb), "%d/%d", shown, total);                 // N/M: shown out of everything the C5 listed
+    tft.fillRect(218, y, LIST_SAVE_X - 218, 17, C_BLACK);
     tft.setTextColor(shown < total ? C_ACCENT : C_MDGREY, C_BLACK);
-    tft.setTextDatum(MR_DATUM);
-    tft.drawString(cb, SCREEN_W - 17, y + 8, 1);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString(cb, 220, y + 8, 1);
+    list_btn(LIST_SAVE_X, y, SCREEN_W - 14 - LIST_SAVE_X, 17, "SAVE", false, C_SIGNAL);     // export what is shown (issue #15)
 }
 
 static void draw_list() {
@@ -1617,6 +1637,7 @@ void ui_touch(int tx, int ty) {
             if (tx < 59) s_lf_radio = (uint8_t)((s_lf_radio + 1) % 3);
             else if (tx < 123) s_lf_alerts = !s_lf_alerts;
             else if (tx < 217) s_lsort = (uint8_t)((s_lsort + 1) % 3);
+            else if (tx >= LIST_SAVE_X) { list_save(); s_dirty = true; return; }
             else return;
             s_list_scroll = 0; s_dirty = true;
             return;

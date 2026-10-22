@@ -179,6 +179,44 @@ first listed or first reaches the alert threshold. A new HELLO clears the subscr
 `SCAN_BLE` result: `{canned:false, total:n, devs:[{mac, name, rssi, atype, age_ms, company?}]}`: devices heard in the last 60 s,
 the 20 freshest, and `total` is the real count (the C5 tracks up to 64).
 
+**Detection record, schema v1** (issue #15). One definition for what leaves the device as a list of detections: the CYD's
+"SAVE" export to the microSD (a CSV and a JSON file from one code path) and the MCP read tool (#9) both use exactly this, so a
+record means the same thing everywhere. It is a snapshot of the CYD's list; the C5 stays the source of truth. It carries only
+the fields below: no payloads, no frame bytes, no capture data.
+
+| field | CSV column / JSON key | type | meaning |
+|-------|-----------------------|------|---------|
+| type | `type` | text | `drone`, `tracker`, `camera`, `bodycam`, `attack` |
+| confidence | `confidence` | int | summed rule weight |
+| strongest signal | `strongest` | int | the strongest single rule weight (an alert needs >= 70) |
+| MAC | `mac` | text | per the MAC mode below; empty when omitted |
+| name | `name` | text | the rule that matched (e.g. `Tile Tracker`) |
+| SSID | `ssid` | text | Wi-Fi network name, empty if none |
+| radio | `radio` | text | `wifi`, `ble`, `both` |
+| band | `band` | int | 2 (2.4 GHz), 5 (5 GHz), 0 (BLE) |
+| channel | `channel` | int | Wi-Fi channel, 0 for BLE (the scan does not report the advertising channel) |
+| RSSI | `rssi` | int | last dBm |
+| first seen | `first_seen_ago_ms` | int | ms before the snapshot that this CYD first saw it |
+| last seen | `last_seen_ago_ms` | int | ms before the snapshot that it was last heard |
+| times heard | `times_heard` | int | the C5's count of sightings |
+| alerted | `alerted` | int/bool | 1/true if its strongest signal reached the alert threshold (>= 70), the CYD's ALERTS filter |
+| muted | `muted` | int/bool | 1/true if the user muted it |
+
+**Time.** The device has no clock, so a record carries no timestamp, only ages relative to the snapshot. The snapshot header gives
+the device uptime (`boot_ms`) when it was taken; a reader that knows the real time (the MCP side) adds it. Text fields never contain
+commas, quotes or line breaks (they are replaced with `_`).
+
+**MAC mode** (recorded in the header, so a reader knows what it has): `full` (`AA:BB:CC:DD:EE:FF`), `oui` (`AA:BB:CC:xx:xx:xx`, the
+manufacturer prefix only), `none` (empty). The export defaults to `full`; a deliberate local save to the SD card. A network-facing reader
+(the MCP tool) should default to `oui` or `none` and need an explicit opt-in for `full`.
+
+**JSON file:** `{"schema":"signalsweep-detections","version":1,"fw":"<cyd firmware>","boot_ms":<uptime at snapshot>,"mac_mode":"full",
+"filter":"<what the list view was showing>","count":<n>,"detections":[{"type":..., ...}]}`, one object per record with the keys above
+(`alerted` and `muted` as booleans). **CSV file:** one header line `type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,first_seen_ago_ms,last_seen_ago_ms,times_heard,alerted,muted`
+then one row per record, CRLF line ends; the snapshot header is in the file name and the matching JSON. Files are
+`/signalsweep/list_NNN.csv` and `list_NNN.json`, numbered up from 001 to the first free number, so an export never overwrites an earlier one.
+Importing a list back in is out of scope. Any change to the fields bumps `version`.
+
 ### 3b-3. Focus mode (`FOCUS_TARGET` 0x15, PASSIVE)
 
 Focus parks the C5 on one target instead of sweeping. It is passive: Wi-Fi locks the target's

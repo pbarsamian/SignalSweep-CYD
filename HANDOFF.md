@@ -182,7 +182,13 @@
   Verified on hardware: cap_007, a GalaxyS22 hotspot capture of 302 frames (16.2 s): 74 frames marked pre-trigger, contiguous at the start,
   spanning 5.0 s, then 228 live frames over 11 s; sidecar count 74 matched; 0 dropped. NOT yet verified: that the ring is freed when the focus is
   released (heap back to ~42.9 KB), BLE pre-trigger, and a retarget while a capture drains (drops the old target's undrained pre-trigger frames).
-  Trigger = the tap on REC (not "before the first alert"). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
+  Trigger = the tap on REC (not "before the first alert").
+  Detection list export (issue #15): schema v1 is in PROTOCOL.md ("Detection record, schema v1"): 15 fields, times as ages relative to the snapshot
+  (no clock), MAC mode full / oui / none recorded in the header. LIST page > SAVE (bar 2, right; the counter is now N/M) writes what the page shows
+  (current filter and sort) to /signalsweep/list_NNN.csv + list_NNN.json from one code path (firmware-cyd/src/listexport.cpp), never overwriting.
+  MACs are written in full (a deliberate local save). `alerted` is derived from strongest >= 70 (Det::alerted is never set on the CYD).
+  Verified on hardware 2026-10-21: list_001 (a filtered export) and list_002 (6 rows, CSV and JSON identical, alerted correct); list_001 survived
+  list_002. NOT built: the MCP read tool (waits for the #9 server; it should default to oui or none MACs), a MAC-mode switch in the UI (always full). Wireshark itself has not been used to open a file yet (neither the Wi-Fi nor the BLE one).
   LIST page (issue #14): two control bars (type chips; radio, ALERTS, sort, "N of M"), a filtered and sorted index of its own
   (`list_build` in ui.cpp; SCOPE keeps the unfiltered `visible_index`), its own scroll offset, a page-per-tap scroll strip whose track
   jumps proportionally. Filter and sort are session-only. 6 rows visible. All 8 on-device checks passed 2026-10-21.
