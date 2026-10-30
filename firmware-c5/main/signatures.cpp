@@ -163,6 +163,10 @@ const Signature SIGNATURES[] = {
     SIG_RULE("DJI device (MAC)",    "Drone", "8c:58:23", "", "", "", 0, ""),
     SIG_RULE("DJI device (MAC)",    "Drone", "e4:7a:2c", "", "", "", 0, ""),
     SIG_RULE("DJI device (MAC)",    "Drone", "20:1f:55", "", "", "", 0, ""),
+    // DJI BLE presence beacon (CYM wiki, github.com/JimGat/CYM/wiki/Drone): OUI 48:1c:b9
+    // AND service UUID 0xFFF0. 0xFFF0 is generic, so it only counts together with the
+    // OUI; weight 60 = listed, never beeps on its own.
+    SIG_RULE("DJI BLE presence beacon", "Drone", "48:1c:b9", "", "", "fff0", 60, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "a0:14:3d", "", "", "", 0, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "00:12:1c", "", "", "", 0, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "00:26:7e", "", "", "", 0, ""),
