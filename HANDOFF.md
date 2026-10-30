@@ -30,6 +30,28 @@
 - DJI + Parrot OUIs -> Drone, 30 (corroboration only)
 - Hak5 00:13:37 -> Hacking gear, 60 (listed, no beep)
 
+## CYD additions (DJI detection expansion, issues #16-#21; needs hardware test where noted)
+- DJI OUIs: the 7 missing IEEE prefixes (04:a8:5a, 0c:9a:e6, 4c:43:f6, 58:b8:58, 88:29:85,
+  8c:58:23, e4:7a:2c) plus DJI Osmo 20:1f:55 -> Drone, 30 (corroboration only) (#16)
+- BLE presence beacon: OUI 48:1c:b9 AND service UUID 0xFFF0 -> Drone, 60 (listed, no beep).
+  0xFFF0 never scores alone. NOT hardware-verified (#17)
+- SSID prefixes `DJI-`, `MAVIC` -> Drone, 60 (listed, no beep). NOT verified: needs a real
+  capture of a DJI SSID (#18)
+- Rule count: 119 (108 before; the earlier "109" counted the SIG_RULE macro line)
+
+## What this can and cannot see (drones)
+
+- **Detectable:** standards Remote ID (Wi-Fi beacon / NAN, BLE); the DJI DroneID vendor IE
+  26:37:12 on Wi-Fi; the DJI BLE presence beacon (OUI 48:1C:B9 + service UUID 0xFFF0, ground
+  detection, pending a hardware test); Tello and ANAFI SSIDs; DJI OUIs and `DJI-`/`MAVIC`
+  SSIDs as weak corroboration (listed, never alert alone).
+- **Not detectable on an ESP32:** OcuSync DroneID (an OFDM burst on 2.4/5.8 GHz). Decoders such
+  as proto17/dji_droneid need an SDR and GNU Radio.
+- **Likely not receivable:** "Enhanced Wi-Fi" drones (Spark/Air/Mini era) reportedly use a
+  5 MHz quarter-rate Atheros ad-hoc mode. Unverified for ESP32; confirm before relying on it.
+- Recent models (Mini 4 Pro, OcuSync 4) may only be catchable on the ground via BLE.
+
+
 ## Info view (v3.18)
 - Scrollable, tracked by MAC (not list index); live refresh 1 s in place;
   shows last data + "aged out" if the device is pruned
@@ -101,8 +123,8 @@
 - CYD dev console (serial) can probe the C5 but cannot change mode or mint tokens
   (those need the M4 pop-up and M6 consent flow).
 - **M3a (2026-10-19), verified on hardware:** C5 passive dual-band Wi-Fi capture (2.4 + 5 GHz
-  hop, promiscuous, mgmt frames only, no probes), ported signature engine (109 rules, same
-  count as legacy), AP table, SCAN_WIFI / LIST_DETECTIONS / SUBSCRIBE_EVENTS with detection
+  hop, promiscuous, mgmt frames only, no probes), ported signature engine (109 rules by the
+  grep count, i.e. 108 rules, same as legacy; 119 after the DJI expansion), AP table, SCAN_WIFI / LIST_DETECTIONS / SUBSCRIBE_EVENTS with detection
   events streamed to the CYD. The C5 flash is now 8 MB with a 1.5 MB app partition (37% free).
 - **Charge mode (user request):** C5 owns the state (NORMAL / CHARGE_USER / CHARGE_FORCED).
   Forced at <= 3.4 V (SS_BATT_LOW_MV), held until > 4.0 V (SS_BATT_EXIT_MV), and the hold

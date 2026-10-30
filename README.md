@@ -337,6 +337,18 @@ display config is `firmware-cyd/config/User_Setup.h`.
 > [`HANDOFF.md`](HANDOFF.md): this board needed MADCTL `0xE8` and `invertDisplay(true)`.
 > Some boards also ship without the speaker fitted, in which case alert beeps are silent.
 
+## What this can and cannot see (drones)
+
+- **Detectable:** standards Remote ID (Wi-Fi beacon / NAN, BLE); the DJI DroneID vendor IE
+  26:37:12 on Wi-Fi; the DJI BLE presence beacon (OUI 48:1C:B9 + service UUID 0xFFF0, ground
+  detection, pending a hardware test); Tello and ANAFI SSIDs; DJI OUIs and `DJI-`/`MAVIC`
+  SSIDs as weak corroboration (listed, never alert alone).
+- **Not detectable on an ESP32:** OcuSync DroneID (an OFDM burst on 2.4/5.8 GHz). Decoders such
+  as proto17/dji_droneid need an SDR and GNU Radio.
+- **Likely not receivable:** "Enhanced Wi-Fi" drones (Spark/Air/Mini era) reportedly use a
+  5 MHz quarter-rate Atheros ad-hoc mode. Unverified for ESP32; confirm before relying on it.
+- Recent models (Mini 4 Pro, OcuSync 4) may only be catchable on the ground via BLE.
+
 ## Legal and ethical use
 
 This is a **receive-only** tool for understanding the radio environment around you: spotting
