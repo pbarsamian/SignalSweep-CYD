@@ -147,12 +147,22 @@ const Signature SIGNATURES[] = {
     SIG_RULE("Parrot ANAFI drone (AP)","Drone", "", "", "", "", 0, "Anafi_"),
     // Drone-maker OUIs. DJI and Parrot also sell gimbals, cameras, headsets and
     // car kits, so OUI-only = W_OUI (30): corroboration, never listed alone.
-    // DJI: 60:60:1f, 34:d2:62, 48:1c:b9 ("DJI drone IDs are not encrypted").
+    // DJI: 60:60:1f, 34:d2:62, 48:1c:b9 ("DJI drone IDs are not encrypted"), plus the
+    // rest of the IEEE registry for SZ DJI TECHNOLOGY CO.,LTD (maclookup.app/vendors/
+    // sz-dji-technology-co-ltd) and 20:1f:55 (DJI Osmo Technology Co., Ltd.).
     // Parrot: a0:14:3d, 00:12:1c, 00:26:7e, 90:03:b7 (IEEE, via py-minidrone);
     // 90:3a:e6 seen as an ANAFI's Wi-Fi MAC (parrotpilots.com capture).
     SIG_RULE("DJI device (MAC)",    "Drone", "60:60:1f", "", "", "", 0, ""),
     SIG_RULE("DJI device (MAC)",    "Drone", "34:d2:62", "", "", "", 0, ""),
     SIG_RULE("DJI device (MAC)",    "Drone", "48:1c:b9", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "04:a8:5a", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "0c:9a:e6", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "4c:43:f6", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "58:b8:58", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "88:29:85", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "8c:58:23", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "e4:7a:2c", "", "", "", 0, ""),
+    SIG_RULE("DJI device (MAC)",    "Drone", "20:1f:55", "", "", "", 0, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "a0:14:3d", "", "", "", 0, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "00:12:1c", "", "", "", 0, ""),
     SIG_RULE("Parrot device (MAC)", "Drone", "00:26:7e", "", "", "", 0, ""),
