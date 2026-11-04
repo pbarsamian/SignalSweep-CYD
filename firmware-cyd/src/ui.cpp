@@ -12,6 +12,7 @@
 #include "sdcap.h"
 #include "listexport.h"
 #include "keyboard.h"
+#include "link.h"
 #include "about_credits.h"     // generated from CREDITS.md by about_pre.py
 #include <stdarg.h>
 
@@ -36,7 +37,7 @@ static int      s_tab = TAB_SCOPE;
 static bool     s_dirty = true;          // the page needs a full repaint
 static bool     s_hdr_dirty = true;
 static bool     s_diag = false;          // SET > DEVICE > DIAGNOSTICS overlay
-static int      s_set_page = 0;          // 0 alerts, 1 device, 2 profile (open-network), 3 about
+static int      s_set_page = 0;          // 0 alerts, 1 device, 2 privacy (open-network), 3 link, 4 about
 #ifndef FW_VERSION
 #define FW_VERSION "unknown"
 #endif
@@ -162,7 +163,7 @@ static void draw_header(const UiCtx& c) {
     char key[48];
     bool ble_fresh = g_model.ble_ms && (millis() - g_model.ble_ms) < 15000;
     int ble_n = ble_fresh ? (int)g_model.ble_total : -1;
-    snprintf(key, sizeof(key), "%d|%u|%d|%d|%d|%d", c.c5->link_up, bat, (int)c.mode, alerts, c.c5->batt_low, ble_n);
+    snprintf(key, sizeof(key), "%d|%u|%d|%d|%d|%d|%d", c.c5->link_up, bat, (int)c.mode, alerts, c.c5->batt_low, ble_n, (int)link_state());
     if (!s_hdr_dirty && strcmp(key, last) == 0) return;
     strncpy(last, key, sizeof(last) - 1);
     s_hdr_dirty = false;
@@ -171,7 +172,17 @@ static void draw_header(const UiCtx& c) {
     tft.drawFastHLine(0, HDR_H - 1, SCREEN_W, C_ACCENT);
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(C_ACCENT, C_BLACK);
-    tft.drawString("SIGNALSWEEP", 4, HDR_H / 2, 1);
+    if (link_state() == LINK_OFF) {
+        tft.drawString("SIGNALSWEEP", 4, HDR_H / 2, 1);
+    } else {                                                     // the Wi-Fi link transmits: say so (stage 1 shows the request only)
+        char lp[12];
+        snprintf(lp, sizeof(lp), "LINK %s", link_state_name(link_state()));
+        tft.fillRoundRect(2, 2, 68, HDR_H - 5, 5, C_WARN);
+        tft.setTextColor(C_BLACK, C_WARN);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(lp, 36, HDR_H / 2, 1);
+        tft.setTextDatum(ML_DATUM);
+    }
 
     // Persistent RF-mode pill (reads the one authoritative mode value)
     uint16_t pc = (c.mode == SS_MODE_SILENT_RX) ? C_SIGNAL : C_WARN;
@@ -1451,18 +1462,74 @@ static void draw_profile() {
     draw_toggle(2, y + 136, SCREEN_W - 4, 30, "Alert log to SD card", g_ui_set.alertlog ? "alerts.csv, ON until reboot" : "alerts.csv: MAC, rule, RSSI", g_ui_set.alertlog);
 }
 
+// LINK: the Wi-Fi link state, idle auto-off and token (issue #23, stage 1: no radio behind it yet).
+#define LINK_ROW_STATE  DEV_Y0
+#define LINK_ROW_IDLE   (DEV_Y0 + 64)
+#define LINK_ROW_TOKEN  (DEV_Y0 + 100)
+static void draw_link(const UiCtx& c) {
+    (void)c;
+    LinkState st = link_state();
+    static const LinkState ORDER[3] = { LINK_OFF, LINK_JOIN, LINK_AP };
+    for (int i = 0; i < 3; i++) {                                  // OFF | JOIN | AP
+        bool on = (st == ORDER[i]);
+        int x = 2 + i * 106;
+        uint16_t bg = on ? (ORDER[i] == LINK_OFF ? C_SIGNAL2 : C_WARN) : C_PANEL;
+        tft.fillRoundRect(x, LINK_ROW_STATE, 104, 30, 6, bg);
+        tft.drawRoundRect(x, LINK_ROW_STATE, 104, 30, 6, C_BORDER);
+        tft.setTextColor(on ? C_BLACK : C_WHITE, bg);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(link_state_name(ORDER[i]), x + 52, LINK_ROW_STATE + 15, 2);
+    }
+    tft.setTextDatum(TL_DATUM);
+    tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 26, C_BLACK);
+    tft.setTextColor(C_WARN, C_BLACK);
+    tft.drawString("Stage 1: no radio yet, nothing transmits", 4, LINK_ROW_STATE + 35, 1);
+    tft.setTextColor(C_LTGREY, C_BLACK);
+    tft.drawString(st == LINK_OFF ? "Link off: Wi-Fi radio dark (default at boot)"
+                   : st == LINK_JOIN ? "Join a saved network (stage 3)" : "Host an access point (stage 2)", 4, LINK_ROW_STATE + 47, 1);
+
+    tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);         // idle auto-off: - value +
+    tft.setTextColor(C_WHITE, C_BLACK);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("IDLE OFF", 6, LINK_ROW_IDLE + 14, 2);
+    draw_button(120, LINK_ROW_IDLE, 40, 30, "-", C_LTGREY);
+    draw_button(SCREEN_W - 46, LINK_ROW_IDLE, 40, 30, "+", C_LTGREY);
+    char b[40];
+    snprintf(b, sizeof(b), "%u min", (unsigned)link_idle_minutes());
+    tft.setTextColor(C_ACCENT, C_BLACK);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(b, 213, LINK_ROW_IDLE + 15, 2);
+
+    tft.fillRect(0, LINK_ROW_TOKEN, SCREEN_W, 30, C_BLACK);        // token + NEW
+    tft.setTextColor(C_WHITE, C_BLACK);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("TOKEN", 6, LINK_ROW_TOKEN + 14, 2);
+    tft.setTextColor(C_ACCENT, C_BLACK);
+    tft.drawString(link_token(), 80, LINK_ROW_TOKEN + 14, 4);
+    draw_button(SCREEN_W - 76, LINK_ROW_TOKEN, 70, 30, "NEW", C_LTGREY);
+
+    uint32_t left = link_idle_left_s();                            // status line
+    if (st == LINK_OFF) snprintf(b, sizeof(b), "free heap %u KB    idle off: -", (unsigned)(ESP.getFreeHeap() / 1024));
+    else snprintf(b, sizeof(b), "free heap %u KB    off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(left / 60), (unsigned)(left % 60));
+    tft.fillRect(0, LINK_ROW_TOKEN + 36, SCREEN_W, 12, C_BLACK);
+    tft.setTextColor(C_MDGREY, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString(b, 4, LINK_ROW_TOKEN + 37, 1);
+}
+
 static void draw_set(const UiCtx& c) {
-    // Segmented control: ALERTS | DEVICE | PROFILE | ABOUT
-    static const char* const SEG[4] = { "ALERTS", "DEVICE", "PRIVACY", "ABOUT" };
-    for (int i = 0; i < 4; i++) {
+    // Segmented control: ALERTS | DEVICE | PRIVACY | LINK | ABOUT
+    static const char* const SEG[5] = { "ALERTS", "DEVICE", "PRIVACY", "LINK", "ABOUT" };
+    for (int i = 0; i < 5; i++) {
         bool on = (s_set_page == i);
-        int x = i * (SCREEN_W / 4);
-        tft.fillRect(x, PAGE_Y, SCREEN_W / 4 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
+        int x = i * (SCREEN_W / 5);
+        tft.fillRect(x, PAGE_Y, SCREEN_W / 5 - 1, SET_SEG_H - 2, on ? C_ACCENT : C_PANEL);
         tft.setTextColor(on ? C_BLACK : C_LTGREY, on ? C_ACCENT : C_PANEL);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString(SEG[i], x + SCREEN_W / 8, PAGE_Y + SET_SEG_H / 2 - 1, 1);
+        tft.drawString(SEG[i], x + SCREEN_W / 10, PAGE_Y + SET_SEG_H / 2 - 1, 1);
     }
-    if (s_set_page == 3) { draw_about(c); return; }
+    if (s_set_page == 4) { draw_about(c); return; }
+    if (s_set_page == 3) { draw_link(c); return; }
     if (s_set_page == 2) { draw_profile(); return; }
     if (s_set_page == 0) {
         for (int i = 0; i < 7; i++) {
@@ -1525,6 +1592,7 @@ void ui_update(const UiCtx& c) {
     uint32_t now = millis();
     alert_tick(now);
     model_prune(now);
+    if (link_tick(now)) { toast("link idle: turned off"); s_hdr_dirty = true; }
     static bool kbd_was = false;
     if (kbd_active()) { kbd_was = true; kbd_draw(); return; }            // the popup keyboard owns the screen
     if (kbd_was) { kbd_was = false; ui_invalidate(); }                   // it just closed: repaint the page under it
@@ -1688,8 +1756,8 @@ void ui_touch(int tx, int ty) {
     }
     if (s_tab == TAB_SET) {
         if (ty < PAGE_Y + SET_SEG_H) {
-            int p = tx / (SCREEN_W / 4);
-            if (p > 3) p = 3;
+            int p = tx / (SCREEN_W / 5);
+            if (p > 4) p = 4;
             if (p != s_set_page) { s_set_page = p; s_dirty = true; }
             return;
         }
@@ -1730,7 +1798,17 @@ void ui_touch(int tx, int ty) {
             }
             return;
         }
-        if (s_set_page == 3) return;                        // ABOUT: nothing to tap
+        if (s_set_page == 4) return;                        // ABOUT: nothing to tap
+        if (s_set_page == 3) {                              // LINK
+            if (ty >= LINK_ROW_STATE && ty < LINK_ROW_STATE + 30) {
+                int i = (tx - 2) / 106;
+                if (i >= 0 && i < 3) { link_set(i == 0 ? LINK_OFF : i == 1 ? LINK_JOIN : LINK_AP); s_hdr_dirty = true; s_dirty = true; }
+            } else if (ty >= LINK_ROW_IDLE && ty < LINK_ROW_IDLE + 30) {
+                if (in_rect(tx, ty, 120, LINK_ROW_IDLE, 40, 30)) { link_idle_step(-1); s_dirty = true; }
+                else if (in_rect(tx, ty, SCREEN_W - 46, LINK_ROW_IDLE, 40, 30)) { link_idle_step(+1); s_dirty = true; }
+            } else if (in_rect(tx, ty, SCREEN_W - 76, LINK_ROW_TOKEN, 70, 30)) { link_new_token(); s_dirty = true; }
+            return;
+        }
         int y = DEV_Y0 + DEV_ROW;                           // CHARGE MODE
         if (in_rect(tx, ty, 6, y, SCREEN_W - 12, 30)) { if (s_cb.enter_charge) s_cb.enter_charge(); return; }
         y += DEV_ROW;                                        // brightness - / +
