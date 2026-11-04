@@ -15,6 +15,17 @@ const char* link_state_name(LinkState s);
 bool        link_set(LinkState s);          // going OFF is always allowed and immediate; false if the radio would not start (state is then OFF)
 bool        link_radio_active(void);        // true only while a radio really is transmitting
 
+// JOIN: link_set(LINK_JOIN) only selects the state (radio stays off until a network is chosen). link_join() starts
+// the station radio on a network; it returns at once and the result shows up in link_join_state() / link_take_notice().
+// A failed or dropped join goes to LINK_OFF with a notice; there is no auto-reconnect. The password is never stored here.
+enum LinkJoin : uint8_t { LJ_NONE = 0, LJ_CONNECTING = 1, LJ_CONNECTED = 2 };
+bool        link_join(const char* ssid, const char* pass);   // pass may be NULL or "" for an open network
+LinkJoin    link_join_state(void);
+const char* link_join_ssid(void);
+const char* link_join_ip(void);
+int         link_join_rssi(void);
+const char* link_take_notice(void);                          // a message to show once (join failed, ...), or NULL
+
 // The AP's details, valid while link_state() == LINK_AP. Random at every start; the PSK is shown on the LINK screen
 // only, never printed to serial.
 const char* link_ap_ssid(void);

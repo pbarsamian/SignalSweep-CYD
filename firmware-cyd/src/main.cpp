@@ -526,6 +526,20 @@ static void kbd_test_done(bool ok, const char* text, void*) {      // test hook:
 static void console() {
     while (Serial.available()) {
         int ch = Serial.read();
+#ifdef LINK_TEST_JOIN                       // test-only (issue #23 stage 3a): "j<ssid>|<password>\n" joins a network. Built with
+        static char jbuf[100];              // PLATFORMIO_BUILD_FLAGS=-DLINK_TEST_JOIN, so the password is never in the source
+        static int  jn = -1;
+        if (jn >= 0) {
+            if (ch == '\n' || ch == '\r') {
+                jbuf[jn] = 0; jn = -1;
+                char* bar = strchr(jbuf, '|');
+                if (bar) { *bar = 0; Serial.printf("[link] test join requested: %s\n", jbuf); link_join(jbuf, bar + 1); }
+                memset(jbuf, 0, sizeof(jbuf));
+            } else if (jn < (int)sizeof(jbuf) - 1) jbuf[jn++] = (char)ch;
+            continue;
+        }
+        if (ch == 'j') { jn = 0; continue; }
+#endif
         uint8_t frame[SS_FRAME_OVERHEAD + 32];
         switch (ch) {
         case 'h': send_hello(); break;

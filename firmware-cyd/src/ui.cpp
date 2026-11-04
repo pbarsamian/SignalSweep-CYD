@@ -1490,10 +1490,21 @@ static void draw_link(const UiCtx& c) {
         tft.setTextColor(C_ACCENT, C_BLACK);
         snprintf(b, sizeof(b), "PSK   %s", link_ap_psk());
         tft.drawString(b, 4, LINK_ROW_STATE + 52, 2);
+    } else if (st == LINK_JOIN && link_join_state() == LJ_CONNECTED) {
+        tft.setTextColor(C_WHITE, C_BLACK);
+        snprintf(b, sizeof(b), "Joined %.24s   %d dBm", link_join_ssid(), link_join_rssi());
+        tft.drawString(b, 4, LINK_ROW_STATE + 35, 2);
+        tft.setTextColor(C_ACCENT, C_BLACK);
+        snprintf(b, sizeof(b), "%s   signalsweep.local", link_join_ip());
+        tft.drawString(b, 4, LINK_ROW_STATE + 52, 2);
+    } else if (st == LINK_JOIN && link_join_state() == LJ_CONNECTING) {
+        tft.setTextColor(C_WARN, C_BLACK);
+        snprintf(b, sizeof(b), "Joining %.28s ...", link_join_ssid());
+        tft.drawString(b, 4, LINK_ROW_STATE + 35, 2);
     } else {
         tft.setTextColor(st == LINK_JOIN ? C_WARN : C_LTGREY, C_BLACK);
         tft.drawString(st == LINK_OFF ? "Link off: Wi-Fi radio dark (default at boot)"
-                       : "JOIN is stage 3: no radio yet, nothing transmits", 4, LINK_ROW_STATE + 35, 1);
+                       : "JOIN: no network chosen yet (saved networks: stage 3b)", 4, LINK_ROW_STATE + 35, 1);
     }
 
     tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);         // idle auto-off: - value +
@@ -1517,8 +1528,9 @@ static void draw_link(const UiCtx& c) {
 
     uint32_t left = link_idle_left_s();                            // status line
     if (st == LINK_OFF) snprintf(b, sizeof(b), "free heap %u KB    idle off: -", (unsigned)(ESP.getFreeHeap() / 1024));
-    else snprintf(b, sizeof(b), "free heap %u KB   clients %d   off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024),
+    else if (st == LINK_AP) snprintf(b, sizeof(b), "free heap %u KB   clients %d   off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024),
                   link_ap_clients(), (unsigned)(left / 60), (unsigned)(left % 60));
+    else snprintf(b, sizeof(b), "free heap %u KB   off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(left / 60), (unsigned)(left % 60));
     tft.fillRect(0, LINK_ROW_TOKEN + 36, SCREEN_W, 12, C_BLACK);
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(TL_DATUM);
@@ -1601,6 +1613,7 @@ void ui_update(const UiCtx& c) {
     alert_tick(now);
     model_prune(now);
     if (link_tick(now)) { toast("link idle: turned off"); s_hdr_dirty = true; }
+    if (const char* ln = link_take_notice()) { toast(ln); s_hdr_dirty = true; s_dirty = true; }       // e.g. a join that failed
     static bool kbd_was = false;
     if (kbd_active()) { kbd_was = true; kbd_draw(); return; }            // the popup keyboard owns the screen
     if (kbd_was) { kbd_was = false; ui_invalidate(); }                   // it just closed: repaint the page under it
