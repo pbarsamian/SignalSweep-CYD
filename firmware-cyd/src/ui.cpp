@@ -1490,6 +1490,66 @@ static void add_ssid_done(bool ok, const char* text, void*) {
 
 static bool link_list_view() { return link_state() == LINK_JOIN && link_join_state() != LJ_CONNECTED; }
 
+// The scan list replaces the saved-network rows while s_scan_view is set. It ends by itself if the link leaves JOIN
+// or a join starts.
+static bool s_scan_view = false;
+static int  s_scan_page = 0;
+#define SCAN_ROWS 4
+static bool scan_view_on() {
+    if (s_scan_view && !(link_state() == LINK_JOIN && link_join_state() == LJ_NONE)) { s_scan_view = false; link_scan_stop(); }
+    return s_scan_view;
+}
+
+static void scan_pick(int i) {                                     // a network was tapped in the scan list
+    char ssid[33];
+    strncpy(ssid, link_scan_ssid(i), sizeof(ssid) - 1);
+    ssid[sizeof(ssid) - 1] = 0;
+    bool open = link_scan_open(i);
+    s_scan_view = false;
+    link_scan_stop();
+    if (open) {
+        toast("open network: traffic is not encrypted");
+        if (!link_join(ssid, "")) toast("could not start the join");
+    } else {
+        strncpy(s_add_ssid, ssid, sizeof(s_add_ssid) - 1);
+        s_add_ssid[sizeof(s_add_ssid) - 1] = 0;
+        kbd_open("Password", "", 63, true, add_pass_done, nullptr);
+    }
+    s_dirty = true;
+}
+
+static void draw_link_scan() {
+    char b[64];
+    tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 12, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    int n = link_scan_count(), pages = max(1, (n + SCAN_ROWS - 1) / SCAN_ROWS);
+    if (s_scan_page >= pages) s_scan_page = pages - 1;
+    if (link_scan_state() == LS_SCANNING) { tft.setTextColor(C_WARN, C_BLACK); snprintf(b, sizeof(b), "Scanning 2.4 GHz (passive) ..."); }
+    else if (n == 0) { tft.setTextColor(C_LTGREY, C_BLACK); snprintf(b, sizeof(b), "No networks heard. Hidden ones: use ADD"); }
+    else { tft.setTextColor(C_LTGREY, C_BLACK); snprintf(b, sizeof(b), "%d networks, page %d/%d. Tap one to join", n, s_scan_page + 1, pages); }
+    tft.drawString(b, 4, LINK_ROW_STATE + 35, 1);
+    for (int r = 0; r < SCAN_ROWS; r++) {
+        int y = LINK_LIST_Y + r * LINK_LIST_H, i = s_scan_page * SCAN_ROWS + r;
+        tft.fillRect(2, y, SCREEN_W - 4, LINK_LIST_H - 2, C_PANEL);
+        tft.drawRect(2, y, SCREEN_W - 4, LINK_LIST_H - 2, C_BORDER);
+        if (i >= n) continue;
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(C_WHITE, C_PANEL);
+        snprintf(b, sizeof(b), "%.20s", link_scan_ssid(i));
+        tft.drawString(b, 8, y + 10, 2);
+        tft.setTextColor(C_MDGREY, C_PANEL);
+        snprintf(b, sizeof(b), "%d", link_scan_rssi(i));
+        tft.setTextDatum(MR_DATUM);
+        tft.drawString(b, SCREEN_W - 40, y + 10, 1);
+        if (link_scan_open(i)) { tft.setTextColor(C_WARN, C_PANEL); tft.drawString("OPEN", SCREEN_W - 8, y + 10, 1); }
+    }
+    tft.fillRect(0, LINK_ADD_Y, SCREEN_W, LINK_ADD_H, C_BLACK);
+    draw_button(2, LINK_ADD_Y, 76, LINK_ADD_H, "BACK", C_LTGREY);
+    draw_button(82, LINK_ADD_Y, 50, LINK_ADD_H, "<", s_scan_page > 0 ? C_LTGREY : C_DKGREY);
+    draw_button(136, LINK_ADD_Y, 50, LINK_ADD_H, ">", s_scan_page + 1 < pages ? C_LTGREY : C_DKGREY);
+    draw_button(190, LINK_ADD_Y, SCREEN_W - 192, LINK_ADD_H, link_scan_state() == LS_SCANNING ? "..." : "RESCAN", link_scan_state() == LS_SCANNING ? C_DKGREY : C_ACCENT);
+}
+
 static void draw_link_list() {
     char b[64];
     tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 12, C_BLACK);
@@ -1518,7 +1578,9 @@ static void draw_link_list() {
             tft.drawString("(empty)", 8, y + 10, 2);
         }
     }
-    draw_button(2, LINK_ADD_Y, SCREEN_W - 4, LINK_ADD_H, "ADD NETWORK", n >= LINK_MAX_NETS ? C_DKGREY : C_ACCENT);
+    tft.fillRect(0, LINK_ADD_Y, SCREEN_W, LINK_ADD_H, C_BLACK);
+    draw_button(2, LINK_ADD_Y, SCREEN_W / 2 - 4, LINK_ADD_H, "SCAN", n >= LINK_MAX_NETS ? C_DKGREY : C_ACCENT);
+    draw_button(SCREEN_W / 2 + 2, LINK_ADD_Y, SCREEN_W / 2 - 4, LINK_ADD_H, "ADD (TYPE)", n >= LINK_MAX_NETS ? C_DKGREY : C_ACCENT);
 }
 
 // After a successful join of an unsaved network: SAVE / NO, in place of the idle row.
@@ -1552,7 +1614,7 @@ static void draw_link(const UiCtx& c) {
     static bool was_list = false;                                  // the JOIN list and the other views use the same area
     bool list = link_list_view();
     if (list != was_list) { tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, TAB_Y - (LINK_ROW_STATE + 34) - 1, C_BLACK); was_list = list; }
-    if (list) { draw_link_list(); return; }
+    if (list) { if (scan_view_on()) draw_link_scan(); else draw_link_list(); return; }
     char b[64];
     tft.setTextDatum(TL_DATUM);
     tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 36, C_BLACK);
@@ -1898,7 +1960,19 @@ void ui_touch(int tx, int ty) {
                     if (!link_set(i == 0 ? LINK_OFF : i == 1 ? LINK_JOIN : LINK_AP)) toast("AP failed to start");
                     s_hdr_dirty = true; s_dirty = true;
                 }
-            } else if (link_list_view()) {                  // JOIN, not connected: the saved networks and ADD
+            } else if (link_list_view() && scan_view_on()) {   // the scan list
+                if (ty >= LINK_LIST_Y && ty < LINK_LIST_Y + SCAN_ROWS * LINK_LIST_H) {
+                    int i = s_scan_page * SCAN_ROWS + (ty - LINK_LIST_Y) / LINK_LIST_H;
+                    if (link_scan_state() == LS_DONE && i < link_scan_count()) scan_pick(i);
+                } else if (ty >= LINK_ADD_Y && ty < LINK_ADD_Y + LINK_ADD_H) {
+                    int pages = max(1, (link_scan_count() + SCAN_ROWS - 1) / SCAN_ROWS);
+                    if (tx < 80) { s_scan_view = false; link_scan_stop(); }                          // BACK
+                    else if (tx < 134) { if (s_scan_page > 0) s_scan_page--; }                       // <
+                    else if (tx < 188) { if (s_scan_page + 1 < pages) s_scan_page++; }               // >
+                    else if (link_scan_state() != LS_SCANNING) { s_scan_page = 0; link_scan_start(); }   // RESCAN
+                }
+                s_dirty = true;
+            } else if (link_list_view()) {                  // JOIN, not connected: the saved networks, SCAN and ADD
                 if (ty >= LINK_LIST_Y && ty < LINK_LIST_Y + LINK_MAX_NETS * LINK_LIST_H) {
                     int i = (ty - LINK_LIST_Y) / LINK_LIST_H;
                     if (i < link_net_count()) {
@@ -1914,6 +1988,7 @@ void ui_touch(int tx, int ty) {
                     }
                 } else if (ty >= LINK_ADD_Y && ty < LINK_ADD_Y + LINK_ADD_H && link_join_state() == LJ_NONE) {
                     if (link_net_count() >= LINK_MAX_NETS) toast("4 saved: forget one first");
+                    else if (tx < SCREEN_W / 2) { if (link_scan_start()) { s_scan_view = true; s_scan_page = 0; s_dirty = true; } else toast("could not start the scan"); }
                     else kbd_open("Network name", "", 32, false, add_ssid_done, nullptr);
                 }
             } else if (link_offer_pending() && ty >= LINK_ROW_IDLE && ty < LINK_ROW_IDLE + 30) {   // SAVE / NO

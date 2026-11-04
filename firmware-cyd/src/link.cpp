@@ -4,6 +4,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <esp_wifi.h>
 
 static const uint8_t STEPS[] = { 5, 15, 30, 60 };
 static const int     NSTEPS = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
@@ -28,6 +29,12 @@ static bool      s_offer = false;                // connected on an unsaved netw
 static char      s_nets[LINK_MAX_NETS][33] = {}; // saved SSIDs (passwords stay in NVS)
 static int       s_nnets = -1;                   // -1 = not loaded yet
 #define NETS_NS "slnets"
+#define SCAN_MAX 16
+#define SCAN_TIMEOUT_MS 15000
+static LinkScan  s_scan = LS_IDLE;
+static uint32_t  s_scan_deadline = 0;
+static struct ScanRes { char ssid[33]; int8_t rssi; bool open; } s_sr[SCAN_MAX];
+static int       s_nsr = 0;
 
 // WiFi.status() cannot tell a wrong password from a slow join; the disconnect reason can.
 static void on_sta_disconnected(arduino_event_id_t, arduino_event_info_t info) {
@@ -118,8 +125,85 @@ static void sta_stop() {
     Serial.printf("[link] JOIN down, free heap %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024));
 }
 
+// ---- scan -----------------------------------------------------------------------------------------------------
+LinkScan    link_scan_state(void) { return s_scan; }
+int         link_scan_count(void) { return s_scan == LS_DONE ? s_nsr : 0; }
+const char* link_scan_ssid(int i) { return (s_scan == LS_DONE && i >= 0 && i < s_nsr) ? s_sr[i].ssid : ""; }
+int         link_scan_rssi(int i) { return (s_scan == LS_DONE && i >= 0 && i < s_nsr) ? s_sr[i].rssi : 0; }
+bool        link_scan_open(int i) { return (s_scan == LS_DONE && i >= 0 && i < s_nsr) && s_sr[i].open; }
+
+void link_scan_stop(void) {
+    if (s_scan == LS_SCANNING) {
+        esp_wifi_scan_stop();
+        WiFi.scanDelete();
+        if (s_join == LJ_NONE) WiFi.mode(WIFI_OFF);                      // nothing else needs the radio
+    }
+    s_scan = LS_IDLE;
+    s_nsr = 0;
+}
+
+bool link_scan_start(void) {
+    if (s_state != LINK_JOIN || s_join != LJ_NONE) return false;
+    link_scan_stop();
+    uint32_t before = ESP.getFreeHeap();
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
+    WiFi.scanDelete();
+    if (WiFi.scanNetworks(true, false, true, 360) == WIFI_SCAN_FAILED) {   // async, no hidden, passive, 360 ms per channel
+        WiFi.mode(WIFI_OFF);
+        snprintf(s_notice, sizeof(s_notice), "scan failed to start");
+        return false;
+    }
+    s_scan = LS_SCANNING;
+    s_scan_deadline = millis() + SCAN_TIMEOUT_MS;
+    link_activity();
+    Serial.printf("[link] scan start (passive), free heap %u KB\n", (unsigned)(before / 1024));
+    return true;
+}
+
+// Called from link_tick(): collect the results when the scan finishes.
+static void scan_poll(uint32_t now_ms) {
+    if (s_scan != LS_SCANNING) return;
+    int n = WiFi.scanComplete();
+    if (n == WIFI_SCAN_RUNNING) {
+        if ((int32_t)(now_ms - s_scan_deadline) >= 0) { link_scan_stop(); snprintf(s_notice, sizeof(s_notice), "scan timed out"); }
+        return;
+    }
+    if (n < 0) { link_scan_stop(); snprintf(s_notice, sizeof(s_notice), "scan failed"); return; }
+    s_nsr = 0;
+    for (int i = 0; i < n; i++) {
+        String name = WiFi.SSID(i);
+        if (!name.length() || name.length() > 32) continue;              // hidden or malformed
+        int8_t rssi = (int8_t)WiFi.RSSI(i);
+        bool open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+        int at = -1;
+        for (int j = 0; j < s_nsr; j++) if (name == s_sr[j].ssid) { at = j; break; }
+        if (at >= 0) { if (rssi > s_sr[at].rssi) { s_sr[at].rssi = rssi; s_sr[at].open = open; } continue; }   // one row per SSID, strongest
+        if (s_nsr < SCAN_MAX) at = s_nsr++;
+        else {                                                           // full: replace the weakest if this one is stronger
+            int w = 0;
+            for (int j = 1; j < s_nsr; j++) if (s_sr[j].rssi < s_sr[w].rssi) w = j;
+            if (rssi <= s_sr[w].rssi) continue;
+            at = w;
+        }
+        strncpy(s_sr[at].ssid, name.c_str(), sizeof(s_sr[at].ssid) - 1);
+        s_sr[at].ssid[sizeof(s_sr[at].ssid) - 1] = 0;
+        s_sr[at].rssi = rssi; s_sr[at].open = open;
+    }
+    for (int i = 1; i < s_nsr; i++) {                                    // strongest first (insertion sort)
+        ScanRes t = s_sr[i]; int j = i - 1;
+        while (j >= 0 && s_sr[j].rssi < t.rssi) { s_sr[j + 1] = s_sr[j]; j--; }
+        s_sr[j + 1] = t;
+    }
+    WiFi.scanDelete();
+    if (s_join == LJ_NONE) WiFi.mode(WIFI_OFF);                          // dark again
+    s_scan = LS_DONE;
+    Serial.printf("[link] scan done: %d networks seen, %d listed, free heap %u KB\n", n, s_nsr, (unsigned)(ESP.getFreeHeap() / 1024));
+}
+
 bool link_join(const char* ssid, const char* pass) {
     if (!ssid || !ssid[0] || strlen(ssid) > 32 || (pass && strlen(pass) > 63)) return false;
+    link_scan_stop();                                                    // the radio is about to be used for the join
     if (s_state != LINK_JOIN) link_set(LINK_JOIN);                       // stops the AP if it was up
     sta_stop();                                                          // a second join replaces the first
     strncpy(s_jssid, ssid, sizeof(s_jssid) - 1);
@@ -251,7 +335,7 @@ static void offer_check() {
 bool link_set(LinkState s) {
     if (s == s_state) return true;
     if (s_state == LINK_AP) ap_stop();
-    if (s_state == LINK_JOIN) sta_stop();
+    if (s_state == LINK_JOIN) { link_scan_stop(); sta_stop(); }
     s_state = s;
     bool ok = true;
     if (s == LINK_AP && !ap_start()) { s_state = LINK_OFF; ok = false; }
@@ -271,6 +355,7 @@ uint32_t link_idle_left_s(void) {
 }
 
 bool link_tick(uint32_t now_ms) {
+    scan_poll(now_ms);
     if (s_ap_up) {
         int n = WiFi.softAPgetStationNum();
         if (n != s_clients) { s_clients = n; Serial.printf("[link] AP clients %d\n", n); }

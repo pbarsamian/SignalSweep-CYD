@@ -26,6 +26,18 @@ const char* link_join_ip(void);
 int         link_join_rssi(void);
 const char* link_take_notice(void);                          // a message to show once (join failed, ...), or NULL
 
+// Scan (stage 3c): a passive 2.4 GHz scan (no probe requests) for the JOIN view's network list. Only while the state is JOIN
+// and not joined. The radio goes dark again when it finishes. Results are RAM only: SSID, strength, open or secured,
+// strongest first, one entry per SSID, hidden networks left out (use ADD for those).
+enum LinkScan : uint8_t { LS_IDLE = 0, LS_SCANNING = 1, LS_DONE = 2 };
+bool        link_scan_start(void);
+void        link_scan_stop(void);                            // cancels a scan in progress and forgets the results
+LinkScan    link_scan_state(void);
+int         link_scan_count(void);
+const char* link_scan_ssid(int i);
+int         link_scan_rssi(int i);
+bool        link_scan_open(int i);
+
 // Saved networks (stage 3b): up to LINK_MAX_NETS, SSID + password in NVS. The password is NOT encrypted at rest and
 // never leaves link.cpp except to the Wi-Fi stack. Nothing auto-joins at boot: a saved network joins only when picked.
 #define LINK_MAX_NETS 4
