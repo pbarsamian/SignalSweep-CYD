@@ -25,6 +25,7 @@
 #include "model.h"
 #include "theme.h"
 #include "ui.h"
+#include "keyboard.h"
 
 // ---- pins (LOCKED in BUILD_MANIFEST.md section 2) ----------------------------
 #define LINK_RX_PIN 27   // CYD RX  <- C5 TX (GPIO9, pad D9)
@@ -512,6 +513,14 @@ static void on_timeout(uint8_t op) {
 }
 
 // ---- dev console --------------------------------------------------------------
+static void kbd_test_done(bool ok, const char* text, void*) {      // test hook: show the result on screen only, never on serial
+    char m[56];
+    if (ok) snprintf(m, sizeof(m), "kbd OK (%u): %.40s", (unsigned)strlen(text), text);
+    else snprintf(m, sizeof(m), "kbd cancelled");
+    Serial.printf("[kbd] %s, %u chars\n", ok ? "OK" : "cancelled", ok ? (unsigned)strlen(text) : 0u);
+    ui_toast(m);
+}
+
 static void console() {
     while (Serial.available()) {
         int ch = Serial.read();
@@ -526,6 +535,8 @@ static void console() {
         case 'a': send_simple(SS_OP_TX_SLOT_A); break;             // gated: expect ERR_MODE
         case 'c': if (c5.link_up) send_set_power(true);  else set_last("no link: cannot enter charge mode"); break;
         case 'e': if (c5.link_up) send_set_power(false); break;
+        case 'y': kbd_open("Test keyboard", "", 63, false, kbd_test_done, nullptr); break;       // test hook (issue #24): plain text
+        case 'Y': kbd_open("Test password", "", 63, true, kbd_test_done, nullptr); break;        // test hook: secret field
         case 't': s_sim_touch = true; break;                       // simulate a screen tap
         case 'p': {                                                // profile of the first listed detection
             int i = -1;
@@ -578,7 +589,7 @@ static void console() {
         }
         case '?':
             Serial.println("h HELLO  s STATUS  w SCAN_WIFI  b SCAN_BLE  l LIST  g GATT(no token)  "
-                           "a TX_SLOT_A(no token)  u unknown-op  x bad-CRC  v bad-version  c charge-on  e charge-off  t tap  p profile  f focus-first  F focus-AP  r release  k focus-view");
+                           "a TX_SLOT_A(no token)  u unknown-op  x bad-CRC  v bad-version  c charge-on  e charge-off  t tap  p profile  y/Y keyboard test  f focus-first  F focus-AP  r release  k focus-view");
             break;
         default: break;
         }

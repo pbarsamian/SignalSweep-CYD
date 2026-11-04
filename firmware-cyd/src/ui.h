@@ -42,6 +42,7 @@ void ui_update(const UiCtx& ctx);             // call every loop (not while in c
 void ui_touch(int x, int y);                  // a touch-down edge, in normal mode
 void ui_alert(uint8_t type);                  // beep + LED for a new alert (respects settings)
 int  ui_active_tab();                         // the main loop polls the C5 based on this
+void ui_toast(const char* msg);               // a short message above the tab bar
 void ui_invalidate();                         // redraw everything (e.g. returning from charge mode)
 bool ui_wants_aps();                          // true while the SCOPE tab shows a Wi-Fi band
 bool ui_wants_ble();                          // true while the SCOPE tab shows the BLE view

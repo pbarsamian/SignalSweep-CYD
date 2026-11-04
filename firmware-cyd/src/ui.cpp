@@ -11,6 +11,7 @@
 #include "vendor.h"
 #include "sdcap.h"
 #include "listexport.h"
+#include "keyboard.h"
 #include "about_credits.h"     // generated from CREDITS.md by about_pre.py
 #include <stdarg.h>
 
@@ -1518,10 +1519,15 @@ static void draw_toast() {
     tft.drawString(s_toast, SCREEN_W / 2, TAB_Y - 11, 1);
 }
 
+void ui_toast(const char* msg) { toast(msg); }
+
 void ui_update(const UiCtx& c) {
     uint32_t now = millis();
     alert_tick(now);
     model_prune(now);
+    static bool kbd_was = false;
+    if (kbd_active()) { kbd_was = true; kbd_draw(); return; }            // the popup keyboard owns the screen
+    if (kbd_was) { kbd_was = false; ui_invalidate(); }                   // it just closed: repaint the page under it
     s_scan = c.c5->link_up ? c.c5->scan : 3;
     s_lock = c.c5->link_up ? c.c5->lock : 0;
     if (s_scope_pref == SC_AUTO && c.c5->link_up) {          // the scope follows what is actually being scanned
@@ -1575,6 +1581,7 @@ static void apply_brightness() {
 }
 
 void ui_touch(int tx, int ty) {
+    if (kbd_active()) { kbd_touch(tx, ty); return; }
     if (s_diag) { s_diag = false; ui_invalidate(); return; }
 
     if (ty >= TAB_Y) {                              // tab bar
