@@ -466,6 +466,41 @@ MCP is JSON-RPC 2.0. The CYD implements the three methods that matter —
 or WebSocket. `tools/list` is generated directly from the capability registry,
 so the tool surface and the gate can't disagree. Tool names == `CapEntry.id`.
 
+### 6a. Link states (CYD Wi-Fi) — design agreed 2026-11-03
+
+The CYD's own ESP32 radio carries the MCP link; the C5 keeps scanning and is not
+involved. Three states, one at a time (no AP+STA combined mode in v1):
+
+| State | Meaning | Use |
+|-------|---------|-----|
+| `LINK_OFF`  | Radio off. **Always the state at boot.** | Default; keeps `MODE_SILENT_RX` truthful |
+| `LINK_JOIN` | Station: joins a saved or chosen network | Laptop and CYD on the same network (phone hotspot, home Wi-Fi), laptop keeps internet |
+| `LINK_AP`   | CYD hosts an AP with a random SSID, WPA2/WPA3 PSK shown on screen | No shared network; also used for provisioning |
+
+Rules:
+- Link is off at boot. Saved networks never auto-join at power-up.
+- `LINK_JOIN` and `LINK_AP` both transmit, so the UI pill must show "LINK ON" while
+  either is active. `MODE_SILENT_RX` ("fully dark") only holds while the link is off.
+- Idle auto-off: the link turns itself off after N minutes with no MCP request.
+  Default 15, adjustable on the LINK screen.
+- JOIN may fail on guest or corporate networks (client isolation, 802.1X, captive
+  portal); AP is the fallback.
+- Credentials: up to 4 saved networks in NVS. Entry by on-screen popup keyboard, an
+  AP provisioning page, or a `wifi.txt` on the SD card. The password never leaves NVS
+  except to the Wi-Fi stack. A BLE keyboard is a later addition.
+- Auth: the CYD shows a random bearer token on the LINK screen; every MCP request
+  carries it. Read-only tools only in 9b. HTTP, not TLS. This stops casual access on a
+  shared network and is not a defence against a determined attacker on that network.
+- The LINK screen is reached from SET and shows: state, SSID/IP/hostname, scan list,
+  saved networks (with Forget), AP SSID and PSK, token, idle-off setting, heap, clients.
+
+### 6b. Transport and first tools
+
+HTTP `POST /mcp` (streamable-HTTP style). First tools are all PASSIVE, named by
+registry id, and return the schema-v1 record from §3b-2/#15: `list_detections`,
+`get_device_profile`, `get_status` (mode, link state, battery, link stats, fw hash),
+`get_alerts`. Live alert push over SSE is not in v1.
+
 PASSIVE tools return results directly. ACTIVE tools return, on first call, a
 `consent_required` result describing the pending touch-confirm — the actual
 operation only runs after the human authorizes, and the laptop re-polls or
