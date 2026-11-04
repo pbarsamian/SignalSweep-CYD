@@ -26,6 +26,7 @@
 #include "theme.h"
 #include "ui.h"
 #include "keyboard.h"
+#include "link.h"
 
 // ---- pins (LOCKED in BUILD_MANIFEST.md section 2) ----------------------------
 #define LINK_RX_PIN 27   // CYD RX  <- C5 TX (GPIO9, pad D9)
@@ -240,6 +241,7 @@ static void apply_power_ui() {
     bool want = (c5.power != SS_POWER_NORMAL);
     if (want == s_charge_ui) return;
     s_charge_ui = want;
+    if (want) link_set(LINK_OFF);                    // charge mode runs the CYD at 80 MHz and dark: the radio goes off first
     status_ui_set_charge(want);
     if (!want) ui_invalidate();
     s_screen_on = true;

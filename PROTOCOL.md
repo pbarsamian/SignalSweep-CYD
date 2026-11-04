@@ -475,7 +475,7 @@ involved. Three states, one at a time (no AP+STA combined mode in v1):
 |-------|---------|-----|
 | `LINK_OFF`  | Radio off. **Always the state at boot.** | Default; keeps `MODE_SILENT_RX` truthful |
 | `LINK_JOIN` | Station: joins a saved or chosen network | Laptop and CYD on the same network (phone hotspot, home Wi-Fi), laptop keeps internet |
-| `LINK_AP`   | CYD hosts an AP with a random SSID, WPA2/WPA3 PSK shown on screen | No shared network; also used for provisioning |
+| `LINK_AP`   | CYD hosts an AP with a random SSID, channel and WPA2-PSK shown on screen, new at every start (WPA3 soft-AP needs a newer Arduino core than 2.0.17) | No shared network; also used for provisioning |
 
 Rules:
 - Link is off at boot. Saved networks never auto-join at power-up.

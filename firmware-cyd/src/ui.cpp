@@ -1464,8 +1464,8 @@ static void draw_profile() {
 
 // LINK: the Wi-Fi link state, idle auto-off and token (issue #23, stage 1: no radio behind it yet).
 #define LINK_ROW_STATE  DEV_Y0
-#define LINK_ROW_IDLE   (DEV_Y0 + 64)
-#define LINK_ROW_TOKEN  (DEV_Y0 + 100)
+#define LINK_ROW_IDLE   (DEV_Y0 + 72)
+#define LINK_ROW_TOKEN  (DEV_Y0 + 108)
 static void draw_link(const UiCtx& c) {
     (void)c;
     LinkState st = link_state();
@@ -1480,13 +1480,21 @@ static void draw_link(const UiCtx& c) {
         tft.setTextDatum(MC_DATUM);
         tft.drawString(link_state_name(ORDER[i]), x + 52, LINK_ROW_STATE + 15, 2);
     }
+    char b[64];
     tft.setTextDatum(TL_DATUM);
-    tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 26, C_BLACK);
-    tft.setTextColor(C_WARN, C_BLACK);
-    tft.drawString("Stage 1: no radio yet, nothing transmits", 4, LINK_ROW_STATE + 35, 1);
-    tft.setTextColor(C_LTGREY, C_BLACK);
-    tft.drawString(st == LINK_OFF ? "Link off: Wi-Fi radio dark (default at boot)"
-                   : st == LINK_JOIN ? "Join a saved network (stage 3)" : "Host an access point (stage 2)", 4, LINK_ROW_STATE + 47, 1);
+    tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 36, C_BLACK);
+    if (st == LINK_AP && link_radio_active()) {                    // the AP: what to type on the laptop
+        tft.setTextColor(C_WHITE, C_BLACK);
+        snprintf(b, sizeof(b), "SSID  %s   ch %u   %s", link_ap_ssid(), (unsigned)link_ap_channel(), link_ap_ip());
+        tft.drawString(b, 4, LINK_ROW_STATE + 35, 2);
+        tft.setTextColor(C_ACCENT, C_BLACK);
+        snprintf(b, sizeof(b), "PSK   %s", link_ap_psk());
+        tft.drawString(b, 4, LINK_ROW_STATE + 52, 2);
+    } else {
+        tft.setTextColor(st == LINK_JOIN ? C_WARN : C_LTGREY, C_BLACK);
+        tft.drawString(st == LINK_OFF ? "Link off: Wi-Fi radio dark (default at boot)"
+                       : "JOIN is stage 3: no radio yet, nothing transmits", 4, LINK_ROW_STATE + 35, 1);
+    }
 
     tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);         // idle auto-off: - value +
     tft.setTextColor(C_WHITE, C_BLACK);
@@ -1494,7 +1502,6 @@ static void draw_link(const UiCtx& c) {
     tft.drawString("IDLE OFF", 6, LINK_ROW_IDLE + 14, 2);
     draw_button(120, LINK_ROW_IDLE, 40, 30, "-", C_LTGREY);
     draw_button(SCREEN_W - 46, LINK_ROW_IDLE, 40, 30, "+", C_LTGREY);
-    char b[40];
     snprintf(b, sizeof(b), "%u min", (unsigned)link_idle_minutes());
     tft.setTextColor(C_ACCENT, C_BLACK);
     tft.setTextDatum(MC_DATUM);
@@ -1510,7 +1517,8 @@ static void draw_link(const UiCtx& c) {
 
     uint32_t left = link_idle_left_s();                            // status line
     if (st == LINK_OFF) snprintf(b, sizeof(b), "free heap %u KB    idle off: -", (unsigned)(ESP.getFreeHeap() / 1024));
-    else snprintf(b, sizeof(b), "free heap %u KB    off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(left / 60), (unsigned)(left % 60));
+    else snprintf(b, sizeof(b), "free heap %u KB   clients %d   off in %u:%02u", (unsigned)(ESP.getFreeHeap() / 1024),
+                  link_ap_clients(), (unsigned)(left / 60), (unsigned)(left % 60));
     tft.fillRect(0, LINK_ROW_TOKEN + 36, SCREEN_W, 12, C_BLACK);
     tft.setTextColor(C_MDGREY, C_BLACK);
     tft.setTextDatum(TL_DATUM);
@@ -1802,7 +1810,10 @@ void ui_touch(int tx, int ty) {
         if (s_set_page == 3) {                              // LINK
             if (ty >= LINK_ROW_STATE && ty < LINK_ROW_STATE + 30) {
                 int i = (tx - 2) / 106;
-                if (i >= 0 && i < 3) { link_set(i == 0 ? LINK_OFF : i == 1 ? LINK_JOIN : LINK_AP); s_hdr_dirty = true; s_dirty = true; }
+                if (i >= 0 && i < 3) {
+                    if (!link_set(i == 0 ? LINK_OFF : i == 1 ? LINK_JOIN : LINK_AP)) toast("AP failed to start");
+                    s_hdr_dirty = true; s_dirty = true;
+                }
             } else if (ty >= LINK_ROW_IDLE && ty < LINK_ROW_IDLE + 30) {
                 if (in_rect(tx, ty, 120, LINK_ROW_IDLE, 40, 30)) { link_idle_step(-1); s_dirty = true; }
                 else if (in_rect(tx, ty, SCREEN_W - 46, LINK_ROW_IDLE, 40, 30)) { link_idle_step(+1); s_dirty = true; }

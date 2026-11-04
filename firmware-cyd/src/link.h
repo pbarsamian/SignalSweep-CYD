@@ -3,8 +3,8 @@
 // OFF (the only state at boot), JOIN (station) and AP. The CYD owns this value; the header pill and the LINK
 // screen read it from here, so they can never disagree.
 //
-// STAGE 1: state, idle auto-off and the token only. No radio is started yet, so nothing transmits.
-// Stage 2 hooks AP into link_set(); stage 3 hooks JOIN.
+// STAGE 2: AP is real (WPA2-PSK soft-AP, random SSID, PSK and channel at every start). JOIN is still only a
+// state: stage 3 starts its radio. Nothing here serves HTTP yet (issue #9b).
 #pragma once
 #include <Arduino.h>
 
@@ -12,8 +12,16 @@ enum LinkState : uint8_t { LINK_OFF = 0, LINK_JOIN = 1, LINK_AP = 2 };
 
 LinkState   link_state(void);
 const char* link_state_name(LinkState s);
-void        link_set(LinkState s);          // going OFF is always allowed and immediate
-bool        link_radio_active(void);        // true only while a radio really is transmitting (false in stage 1)
+bool        link_set(LinkState s);          // going OFF is always allowed and immediate; false if the radio would not start (state is then OFF)
+bool        link_radio_active(void);        // true only while a radio really is transmitting
+
+// The AP's details, valid while link_state() == LINK_AP. Random at every start; the PSK is shown on the LINK screen
+// only, never printed to serial.
+const char* link_ap_ssid(void);
+const char* link_ap_psk(void);
+uint8_t     link_ap_channel(void);
+int         link_ap_clients(void);
+const char* link_ap_ip(void);
 
 // Idle auto-off: the link turns itself off after N minutes with no MCP request. Steps 5/15/30/60, default 15,
 // saved in NVS. There is deliberately no "never".
