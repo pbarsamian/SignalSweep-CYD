@@ -1462,10 +1462,79 @@ static void draw_profile() {
     draw_toggle(2, y + 136, SCREEN_W - 4, 30, "Alert log to SD card", g_ui_set.alertlog ? "alerts.csv, ON until reboot" : "alerts.csv: MAC, rule, RSSI", g_ui_set.alertlog);
 }
 
-// LINK: the Wi-Fi link state, idle auto-off and token (issue #23, stage 1: no radio behind it yet).
+// LINK: the Wi-Fi link state, saved networks, idle auto-off and token (issue #23).
 #define LINK_ROW_STATE  DEV_Y0
 #define LINK_ROW_IDLE   (DEV_Y0 + 72)
 #define LINK_ROW_TOKEN  (DEV_Y0 + 108)
+#define LINK_LIST_Y     (DEV_Y0 + 46)                              // JOIN view: the saved-network rows
+#define LINK_LIST_H     22
+#define LINK_ADD_Y      (LINK_LIST_Y + LINK_MAX_NETS * LINK_LIST_H + 4)
+#define LINK_ADD_H      24
+#define FORGET_ARM_MS   3000
+
+static int      s_forget_i = -1;                                   // a saved network whose X was tapped once
+static uint32_t s_forget_ms = 0;
+static char     s_add_ssid[33];                                    // the name typed in ADD, held while the password keyboard is up
+
+// ADD: name keyboard, then password keyboard, then join. Nothing is saved until the join works and Paul taps SAVE.
+static void add_pass_done(bool ok, const char* text, void*) {
+    if (ok && !link_join(s_add_ssid, text)) toast("could not start the join");
+    memset(s_add_ssid, 0, sizeof(s_add_ssid));
+    s_dirty = true;
+}
+static void add_ssid_done(bool ok, const char* text, void*) {
+    if (!ok || !text[0]) { s_dirty = true; return; }
+    strncpy(s_add_ssid, text, sizeof(s_add_ssid) - 1);
+    kbd_open("Password (blank = open)", "", 63, true, add_pass_done, nullptr);   // opened from inside the callback: keyboard.cpp copes
+}
+
+static bool link_list_view() { return link_state() == LINK_JOIN && link_join_state() != LJ_CONNECTED; }
+
+static void draw_link_list() {
+    char b[64];
+    tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 12, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    if (link_join_state() == LJ_CONNECTING) { tft.setTextColor(C_WARN, C_BLACK); snprintf(b, sizeof(b), "Joining %.28s ...", link_join_ssid()); }
+    else { tft.setTextColor(C_LTGREY, C_BLACK); snprintf(b, sizeof(b), "Tap a saved network to join, or ADD one"); }
+    tft.drawString(b, 4, LINK_ROW_STATE + 35, 1);
+    if (s_forget_i >= 0 && millis() - s_forget_ms >= FORGET_ARM_MS) s_forget_i = -1;     // the second tap came too late
+    int n = link_net_count();
+    for (int i = 0; i < LINK_MAX_NETS; i++) {
+        int y = LINK_LIST_Y + i * LINK_LIST_H;
+        tft.fillRect(2, y, SCREEN_W - 4, LINK_LIST_H - 2, C_PANEL);
+        tft.drawRect(2, y, SCREEN_W - 4, LINK_LIST_H - 2, C_BORDER);
+        tft.setTextDatum(ML_DATUM);
+        if (i < n) {
+            tft.setTextColor(C_WHITE, C_PANEL);
+            tft.drawString(link_net_ssid(i), 8, y + 10, 2);
+            bool armed = (s_forget_i == i);
+            uint16_t xc = armed ? C_BAD : C_PANEL;
+            tft.fillRect(SCREEN_W - 34, y + 1, 30, LINK_LIST_H - 4, xc);
+            tft.setTextColor(armed ? C_WHITE : C_MDGREY, xc);
+            tft.setTextDatum(MC_DATUM);
+            tft.drawString(armed ? "?" : "X", SCREEN_W - 19, y + 10, 2);
+        } else {
+            tft.setTextColor(C_DKGREY, C_PANEL);
+            tft.drawString("(empty)", 8, y + 10, 2);
+        }
+    }
+    draw_button(2, LINK_ADD_Y, SCREEN_W - 4, LINK_ADD_H, "ADD NETWORK", n >= LINK_MAX_NETS ? C_DKGREY : C_ACCENT);
+}
+
+// After a successful join of an unsaved network: SAVE / NO, in place of the idle row.
+static void draw_link_offer() {
+    char b[48];
+    tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(C_WHITE, C_BLACK);
+    snprintf(b, sizeof(b), "Save %.14s?", link_join_ssid());
+    tft.drawString(b, 4, LINK_ROW_IDLE, 2);
+    tft.setTextColor(C_WARN, C_BLACK);
+    tft.drawString("Stored unencrypted here", 4, LINK_ROW_IDLE + 18, 1);
+    draw_button(SCREEN_W - 136, LINK_ROW_IDLE, 64, 30, "SAVE", C_SIGNAL);
+    draw_button(SCREEN_W - 68, LINK_ROW_IDLE, 62, 30, "NO", C_LTGREY);
+}
+
 static void draw_link(const UiCtx& c) {
     (void)c;
     LinkState st = link_state();
@@ -1480,6 +1549,10 @@ static void draw_link(const UiCtx& c) {
         tft.setTextDatum(MC_DATUM);
         tft.drawString(link_state_name(ORDER[i]), x + 52, LINK_ROW_STATE + 15, 2);
     }
+    static bool was_list = false;                                  // the JOIN list and the other views use the same area
+    bool list = link_list_view();
+    if (list != was_list) { tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, TAB_Y - (LINK_ROW_STATE + 34) - 1, C_BLACK); was_list = list; }
+    if (list) { draw_link_list(); return; }
     char b[64];
     tft.setTextDatum(TL_DATUM);
     tft.fillRect(0, LINK_ROW_STATE + 34, SCREEN_W, 36, C_BLACK);
@@ -1497,26 +1570,24 @@ static void draw_link(const UiCtx& c) {
         tft.setTextColor(C_ACCENT, C_BLACK);
         snprintf(b, sizeof(b), "%s   signalsweep.local", link_join_ip());
         tft.drawString(b, 4, LINK_ROW_STATE + 52, 2);
-    } else if (st == LINK_JOIN && link_join_state() == LJ_CONNECTING) {
-        tft.setTextColor(C_WARN, C_BLACK);
-        snprintf(b, sizeof(b), "Joining %.28s ...", link_join_ssid());
-        tft.drawString(b, 4, LINK_ROW_STATE + 35, 2);
     } else {
-        tft.setTextColor(st == LINK_JOIN ? C_WARN : C_LTGREY, C_BLACK);
-        tft.drawString(st == LINK_OFF ? "Link off: Wi-Fi radio dark (default at boot)"
-                       : "JOIN: no network chosen yet (saved networks: stage 3b)", 4, LINK_ROW_STATE + 35, 1);
+        tft.setTextColor(C_LTGREY, C_BLACK);
+        tft.drawString("Link off: Wi-Fi radio dark (default at boot)", 4, LINK_ROW_STATE + 35, 1);
     }
 
-    tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);         // idle auto-off: - value +
-    tft.setTextColor(C_WHITE, C_BLACK);
-    tft.setTextDatum(ML_DATUM);
-    tft.drawString("IDLE OFF", 6, LINK_ROW_IDLE + 14, 2);
-    draw_button(120, LINK_ROW_IDLE, 40, 30, "-", C_LTGREY);
-    draw_button(SCREEN_W - 46, LINK_ROW_IDLE, 40, 30, "+", C_LTGREY);
-    snprintf(b, sizeof(b), "%u min", (unsigned)link_idle_minutes());
-    tft.setTextColor(C_ACCENT, C_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(b, 213, LINK_ROW_IDLE + 15, 2);
+    if (link_offer_pending()) draw_link_offer();
+    else {
+        tft.fillRect(0, LINK_ROW_IDLE, SCREEN_W, 30, C_BLACK);     // idle auto-off: - value +
+        tft.setTextColor(C_WHITE, C_BLACK);
+        tft.setTextDatum(ML_DATUM);
+        tft.drawString("IDLE OFF", 6, LINK_ROW_IDLE + 14, 2);
+        draw_button(120, LINK_ROW_IDLE, 40, 30, "-", C_LTGREY);
+        draw_button(SCREEN_W - 46, LINK_ROW_IDLE, 40, 30, "+", C_LTGREY);
+        snprintf(b, sizeof(b), "%u min", (unsigned)link_idle_minutes());
+        tft.setTextColor(C_ACCENT, C_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(b, 213, LINK_ROW_IDLE + 15, 2);
+    }
 
     tft.fillRect(0, LINK_ROW_TOKEN, SCREEN_W, 30, C_BLACK);        // token + NEW
     tft.setTextColor(C_WHITE, C_BLACK);
@@ -1827,6 +1898,27 @@ void ui_touch(int tx, int ty) {
                     if (!link_set(i == 0 ? LINK_OFF : i == 1 ? LINK_JOIN : LINK_AP)) toast("AP failed to start");
                     s_hdr_dirty = true; s_dirty = true;
                 }
+            } else if (link_list_view()) {                  // JOIN, not connected: the saved networks and ADD
+                if (ty >= LINK_LIST_Y && ty < LINK_LIST_Y + LINK_MAX_NETS * LINK_LIST_H) {
+                    int i = (ty - LINK_LIST_Y) / LINK_LIST_H;
+                    if (i < link_net_count()) {
+                        if (tx >= SCREEN_W - 36) {          // X: the second tap within 3 s forgets it
+                            if (s_forget_i == i && millis() - s_forget_ms < FORGET_ARM_MS) { link_net_forget(i); s_forget_i = -1; toast("network forgotten"); }
+                            else { s_forget_i = i; s_forget_ms = millis(); }
+                            s_dirty = true;
+                        } else if (link_join_state() == LJ_NONE) {
+                            s_forget_i = -1;
+                            if (!link_net_join(i)) toast("could not start the join");
+                            s_dirty = true;
+                        }
+                    }
+                } else if (ty >= LINK_ADD_Y && ty < LINK_ADD_Y + LINK_ADD_H && link_join_state() == LJ_NONE) {
+                    if (link_net_count() >= LINK_MAX_NETS) toast("4 saved: forget one first");
+                    else kbd_open("Network name", "", 32, false, add_ssid_done, nullptr);
+                }
+            } else if (link_offer_pending() && ty >= LINK_ROW_IDLE && ty < LINK_ROW_IDLE + 30) {   // SAVE / NO
+                if (in_rect(tx, ty, SCREEN_W - 136, LINK_ROW_IDLE, 64, 30)) { link_offer_answer(true); s_dirty = true; }
+                else if (in_rect(tx, ty, SCREEN_W - 68, LINK_ROW_IDLE, 62, 30)) { link_offer_answer(false); s_dirty = true; }
             } else if (ty >= LINK_ROW_IDLE && ty < LINK_ROW_IDLE + 30) {
                 if (in_rect(tx, ty, 120, LINK_ROW_IDLE, 40, 30)) { link_idle_step(-1); s_dirty = true; }
                 else if (in_rect(tx, ty, SCREEN_W - 46, LINK_ROW_IDLE, 40, 30)) { link_idle_step(+1); s_dirty = true; }

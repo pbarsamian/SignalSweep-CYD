@@ -26,6 +26,21 @@ const char* link_join_ip(void);
 int         link_join_rssi(void);
 const char* link_take_notice(void);                          // a message to show once (join failed, ...), or NULL
 
+// Saved networks (stage 3b): up to LINK_MAX_NETS, SSID + password in NVS. The password is NOT encrypted at rest and
+// never leaves link.cpp except to the Wi-Fi stack. Nothing auto-joins at boot: a saved network joins only when picked.
+#define LINK_MAX_NETS 4
+int         link_net_count(void);
+const char* link_net_ssid(int i);                            // NULL if i is out of range
+bool        link_net_save(const char* ssid, const char* pass);   // add, or update the password of a saved SSID; false if full
+void        link_net_forget(int i);                          // the list closes the gap
+void        link_net_forget_all(void);                       // used by the test hook only
+bool        link_net_join(int i);                            // password read from NVS, never returned to the caller
+
+// After a successful join of a network that is not saved (or saved with a different password) the link offers to save
+// it. The password is held in RAM until the offer is answered or the link goes down, then wiped.
+bool        link_offer_pending(void);                        // the connected network is waiting for SAVE / NO
+void        link_offer_answer(bool save);
+
 // The AP's details, valid while link_state() == LINK_AP. Random at every start; the PSK is shown on the LINK screen
 // only, never printed to serial.
 const char* link_ap_ssid(void);

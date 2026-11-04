@@ -529,16 +529,24 @@ static void console() {
 #ifdef LINK_TEST_JOIN                       // test-only (issue #23 stage 3a): "j<ssid>|<password>\n" joins a network. Built with
         static char jbuf[100];              // PLATFORMIO_BUILD_FLAGS=-DLINK_TEST_JOIN, so the password is never in the source
         static int  jn = -1;
+        static char jmode = 0;              // 'j' join, 'S' save a (fake) network without joining: "S<ssid>|<password>\n"
         if (jn >= 0) {
             if (ch == '\n' || ch == '\r') {
                 jbuf[jn] = 0; jn = -1;
                 char* bar = strchr(jbuf, '|');
-                if (bar) { *bar = 0; Serial.printf("[link] test join requested: %s\n", jbuf); link_join(jbuf, bar + 1); }
+                if (bar && jmode == 'j') { *bar = 0; Serial.printf("[link] test join requested: %s\n", jbuf); link_join(jbuf, bar + 1); }
+                else if (bar && jmode == 'S') { *bar = 0; if (!link_net_save(jbuf, bar + 1)) Serial.println("[link] test save refused (full or bad)"); }
                 memset(jbuf, 0, sizeof(jbuf));
             } else if (jn < (int)sizeof(jbuf) - 1) jbuf[jn++] = (char)ch;
             continue;
         }
-        if (ch == 'j') { jn = 0; continue; }
+        if (ch == 'j' || ch == 'S') { jmode = (char)ch; jn = 0; continue; }
+        if (ch == 'n') {                    // list the saved networks (SSIDs only, never passwords)
+            Serial.printf("[link] saved networks: %d\n", link_net_count());
+            for (int i = 0; i < link_net_count(); i++) Serial.printf("[link]   %d: %s\n", i, link_net_ssid(i));
+            continue;
+        }
+        if (ch == 'N') { link_net_forget_all(); continue; }
 #endif
         uint8_t frame[SS_FRAME_OVERHEAD + 32];
         switch (ch) {

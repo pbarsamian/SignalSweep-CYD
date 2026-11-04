@@ -141,9 +141,12 @@ bool kbd_active(void) { return s_active; }
 static void finish(bool ok) {
     KbdDone cb = s_done; void* ctx = s_ctx;
     s_active = false; s_done = nullptr; s_ctx = nullptr;
-    if (cb) cb(ok, ok ? s_buf : "", ctx);
+    char text[KBD_MAX_LEN + 1] = {};                       // the callback gets a copy, so it may open the next keyboard
+    if (ok) memcpy(text, s_buf, sizeof(text));            // (kbd_open() inside the callback reuses s_buf)
     memset(s_buf, 0, sizeof(s_buf));                       // do not leave a password lying in RAM
     s_len = 0;
+    if (cb) cb(ok, text, ctx);
+    memset(text, 0, sizeof(text));
 }
 
 void kbd_touch(int tx, int ty) {

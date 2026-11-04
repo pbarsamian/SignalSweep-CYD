@@ -485,9 +485,18 @@ Rules:
   Default 15, adjustable on the LINK screen.
 - JOIN may fail on guest or corporate networks (client isolation, 802.1X, captive
   portal); AP is the fallback.
-- Credentials: up to 4 saved networks in NVS. Entry by on-screen popup keyboard, an
-  AP provisioning page, or a `wifi.txt` on the SD card. The password never leaves NVS
-  except to the Wi-Fi stack. A BLE keyboard is a later addition.
+- Credentials (built): up to 4 saved networks, SSID and password in NVS. Entry is ADD on the
+  LINK page's JOIN view: the popup keyboard asks for the name, then the password (blank =
+  open network), then joins. The network is offered for saving ("Save 'X'? Stored
+  unencrypted here") only after a join succeeds, and only if it is unsaved or its password
+  differs; a failed join saves nothing. A saved network joins by one tap, with no keyboard.
+  Forget needs two taps on the X within 3 s; the list closes the gap. NVS is NOT encrypted
+  at rest: anyone with the unit and a USB cable could read the saved passwords, so do not
+  save a network you would not hand over. The password never leaves link.cpp except to the
+  Wi-Fi stack, is never printed to serial, and the copy kept during a join is wiped when
+  the offer is answered or the link goes down. Nothing auto-joins at boot, and a dropped
+  join goes to OFF (no auto-reconnect). Not built: a scan list that fills in the name (3c),
+  an AP provisioning page, a `wifi.txt` on the SD card, and a BLE keyboard (#27).
 - Auth: the CYD shows a random bearer token on the LINK screen; every MCP request
   carries it. Read-only tools only in 9b. HTTP, not TLS. This stops casual access on a
   shared network and is not a defence against a determined attacker on that network.

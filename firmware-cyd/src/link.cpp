@@ -23,6 +23,11 @@ static char      s_notice[40] = {};              // a message for the UI to toas
 #define JOIN_TIMEOUT_MS 15000
 static volatile uint8_t s_reason = 0;            // the station's last disconnect reason (esp_wifi_types.h), 0 = none this attempt
 static bool      s_ev_hooked = false;
+static char      s_jpass[64] = {};               // the password of the attempt in progress; wiped as soon as it is no longer needed
+static bool      s_offer = false;                // connected on an unsaved network: waiting for SAVE / NO
+static char      s_nets[LINK_MAX_NETS][33] = {}; // saved SSIDs (passwords stay in NVS)
+static int       s_nnets = -1;                   // -1 = not loaded yet
+#define NETS_NS "slnets"
 
 // WiFi.status() cannot tell a wrong password from a slow join; the disconnect reason can.
 static void on_sta_disconnected(arduino_event_id_t, arduino_event_info_t info) {
@@ -108,6 +113,8 @@ static void sta_stop() {
     WiFi.mode(WIFI_OFF);
     s_join = LJ_NONE;
     s_jssid[0] = 0; s_jip[0] = 0;
+    memset(s_jpass, 0, sizeof(s_jpass));
+    s_offer = false;
     Serial.printf("[link] JOIN down, free heap %u KB\n", (unsigned)(ESP.getFreeHeap() / 1024));
 }
 
@@ -117,6 +124,8 @@ bool link_join(const char* ssid, const char* pass) {
     sta_stop();                                                          // a second join replaces the first
     strncpy(s_jssid, ssid, sizeof(s_jssid) - 1);
     s_jssid[sizeof(s_jssid) - 1] = 0;
+    memset(s_jpass, 0, sizeof(s_jpass));
+    if (pass) strncpy(s_jpass, pass, sizeof(s_jpass) - 1);               // kept only to offer "save this network?" after a success
     uint32_t before = ESP.getFreeHeap();
     if (!s_ev_hooked) { WiFi.onEvent(on_sta_disconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED); s_ev_hooked = true; }
     s_reason = 0;
@@ -130,6 +139,113 @@ bool link_join(const char* ssid, const char* pass) {
     link_activity();
     Serial.printf("[link] JOIN start: ssid %s, free heap %u KB\n", s_jssid, (unsigned)(before / 1024));
     return true;
+}
+
+// ---- saved networks -------------------------------------------------------------------------------------------
+static void nets_load() {
+    if (s_nnets >= 0) return;
+    Preferences p; p.begin(NETS_NS, true);
+    s_nnets = 0;
+    for (int i = 0; i < LINK_MAX_NETS; i++) {
+        char k[4]; snprintf(k, sizeof(k), "s%d", i);
+        char v[33] = {};
+        if (p.getString(k, v, sizeof(v)) && v[0]) { memcpy(s_nets[s_nnets], v, sizeof(v)); s_nnets++; }
+    }
+    p.end();
+}
+
+static int net_find(const char* ssid) {
+    nets_load();
+    for (int i = 0; i < s_nnets; i++) if (strcmp(s_nets[i], ssid) == 0) return i;
+    return -1;
+}
+
+int         link_net_count(void) { nets_load(); return s_nnets; }
+const char* link_net_ssid(int i) { nets_load(); return (i >= 0 && i < s_nnets) ? s_nets[i] : nullptr; }
+
+bool link_net_save(const char* ssid, const char* pass) {
+    if (!ssid || !ssid[0] || strlen(ssid) > 32 || (pass && strlen(pass) > 63)) return false;
+    int i = net_find(ssid);
+    if (i < 0) {
+        if (s_nnets >= LINK_MAX_NETS) return false;
+        i = s_nnets++;
+        strncpy(s_nets[i], ssid, sizeof(s_nets[i]) - 1);
+        s_nets[i][sizeof(s_nets[i]) - 1] = 0;
+    }
+    Preferences p; p.begin(NETS_NS, false);
+    char k[4];
+    snprintf(k, sizeof(k), "s%d", i); p.putString(k, s_nets[i]);
+    snprintf(k, sizeof(k), "p%d", i); p.putString(k, pass ? pass : "");
+    p.end();
+    Serial.printf("[link] saved network %d: %s\n", i, s_nets[i]);
+    return true;
+}
+
+void link_net_forget(int i) {
+    nets_load();
+    if (i < 0 || i >= s_nnets) return;
+    Preferences p; p.begin(NETS_NS, false);
+    char ks[4], kp[4], pw[64];
+    for (int j = i; j < s_nnets - 1; j++) {                              // shift the later entries down over the gap
+        memcpy(s_nets[j], s_nets[j + 1], sizeof(s_nets[j]));
+        pw[0] = 0;
+        snprintf(kp, sizeof(kp), "p%d", j + 1); p.getString(kp, pw, sizeof(pw));
+        snprintf(ks, sizeof(ks), "s%d", j); p.putString(ks, s_nets[j]);
+        snprintf(kp, sizeof(kp), "p%d", j); p.putString(kp, pw);
+    }
+    memset(pw, 0, sizeof(pw));
+    memset(s_nets[s_nnets - 1], 0, sizeof(s_nets[0]));
+    snprintf(ks, sizeof(ks), "s%d", s_nnets - 1); p.remove(ks);
+    snprintf(kp, sizeof(kp), "p%d", s_nnets - 1); p.remove(kp);
+    p.end();
+    s_nnets--;
+    Serial.printf("[link] forgot network %d, %d saved\n", i, s_nnets);
+}
+
+void link_net_forget_all(void) { nets_load(); while (s_nnets > 0) link_net_forget(s_nnets - 1); }
+
+bool link_net_join(int i) {
+    nets_load();
+    if (i < 0 || i >= s_nnets) return false;
+    char pw[64] = {}, k[4];
+    Preferences p; p.begin(NETS_NS, true);
+    snprintf(k, sizeof(k), "p%d", i); p.getString(k, pw, sizeof(pw));
+    p.end();
+    bool ok = link_join(s_nets[i], pw);
+    memset(pw, 0, sizeof(pw));
+    return ok;
+}
+
+bool link_offer_pending(void) { return s_offer && s_join == LJ_CONNECTED; }
+
+void link_offer_answer(bool save) {
+    if (!s_offer) return;
+    if (save) {
+        if (link_net_save(s_jssid, s_jpass)) snprintf(s_notice, sizeof(s_notice), "saved %.28s", s_jssid);
+        else snprintf(s_notice, sizeof(s_notice), "not saved");
+    }
+    memset(s_jpass, 0, sizeof(s_jpass));
+    s_offer = false;
+}
+
+// A join just succeeded: is this network worth offering to save?
+static void offer_check() {
+    s_offer = false;
+    int i = net_find(s_jssid);
+    if (i >= 0) {                                                        // saved: offer only if the password differs
+        char pw[64] = {}, k[4];
+        Preferences p; p.begin(NETS_NS, true);
+        snprintf(k, sizeof(k), "p%d", i); p.getString(k, pw, sizeof(pw));
+        p.end();
+        bool same = strcmp(pw, s_jpass) == 0;
+        memset(pw, 0, sizeof(pw));
+        if (same) { memset(s_jpass, 0, sizeof(s_jpass)); return; }
+    } else if (s_nnets >= LINK_MAX_NETS) {
+        snprintf(s_notice, sizeof(s_notice), "%d saved: forget one to save this", LINK_MAX_NETS);
+        memset(s_jpass, 0, sizeof(s_jpass));
+        return;
+    }
+    s_offer = true;
 }
 
 bool link_set(LinkState s) {
@@ -169,6 +285,7 @@ bool link_tick(uint32_t now_ms) {
                 bool mdns = MDNS.begin("signalsweep");
                 Serial.printf("[link] JOIN up: ssid %s ip %s rssi %d mdns %s, free heap %u KB (min %u)\n", s_jssid, s_jip, WiFi.RSSI(),
                               mdns ? "ok" : "failed", (unsigned)(ESP.getFreeHeap() / 1024), (unsigned)(ESP.getMinFreeHeap() / 1024));
+                offer_check();
             }
             else if (st == WL_NO_SSID_AVAIL || s_reason == WIFI_REASON_NO_AP_FOUND) fail = "network not found";
             else if (st == WL_CONNECT_FAILED || s_reason == WIFI_REASON_AUTH_FAIL || s_reason == WIFI_REASON_MIC_FAILURE ||
