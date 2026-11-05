@@ -13,6 +13,10 @@
 #include <ESPmDNS.h>
 #include "link.h"
 #include "mode.h"
+#include "model.h"
+#include "listexport.h"
+#include "theme.h"                          // CONF_ALERT_MIN
+#include "ui.h"
 #include "ss_capabilities.h"
 
 #ifndef FW_VERSION
@@ -32,9 +36,20 @@ static uint8_t          s_bad = 0;
 static uint32_t         s_lock_until = 0;
 static bool             s_locked = false;
 static char             s_body[MCP_MAX_BODY + 1];
+// A tool that needs the C5 to poll something the screens are not showing asks for it; main.cpp polls while the want lasts.
+#define WANT_MS 20000
+static uint32_t         s_aps_until = 0, s_prof_until = 0;
+static char             s_prof_mac[18] = {};
 
 void mcp_init(const C5Status* c5) { s_c5 = c5; }
 bool mcp_running(void) { return s_up; }
+bool mcp_wants_aps(void) { return s_up && (int32_t)(s_aps_until - millis()) > 0; }
+bool mcp_wants_profile(char* mac_out) {
+    if (!s_up || !s_prof_mac[0] || (int32_t)(s_prof_until - millis()) <= 0) return false;
+    strncpy(mac_out, s_prof_mac, 18);
+    mac_out[17] = 0;
+    return true;
+}
 
 // ---- output ----------------------------------------------------------------------------------------------------------
 // Buffers small writes so a response goes out in a few TCP segments instead of one per print().
@@ -136,10 +151,11 @@ static bool jid(const char* s, char* out, size_t cap) {
 }
 
 // ---- tools -----------------------------------------------------------------------------------------------------------
-typedef void (*ToolFn)(Print& o, const char* args);
+// A tool writes its JSON result to o and returns true, or writes a one-line reason and returns false (sent as isError).
+typedef bool (*ToolFn)(Print& o, const char* args);
 struct Tool { const char* id; const char* schema; ToolFn fn; };
 
-static void tool_get_status(Print& o, const char*) {
+static bool tool_get_status(Print& o, const char*) {
     LinkState st = link_state();
     o.printf("{\"fw\":\"%s\",\"uptime_ms\":%lu,\"free_heap\":%u,\"mode\":", FW_VERSION, (unsigned long)millis(), (unsigned)ESP.getFreeHeap());
     jprint(o, mode_name(mode_get()));
@@ -157,13 +173,191 @@ static void tool_get_status(Print& o, const char*) {
                  (unsigned)s_c5->lock, (unsigned)s_c5->band, (unsigned)s_c5->dets);
     }
     o.print("}}");
+    return true;
+}
+
+// ---- the read tools: answer from the CYD's cache of what the C5 reported -----------------------------------------------
+// The server cannot wait on the C5, so a cold cache answers {"pending":true,"retry_ms":...} and the caller asks again.
+static bool arg_mac_mode(const char* args, ListMacMode* m, Print& o) {
+    char v[8];
+    *m = LMAC_FULL;
+    if (!jstr(args, "mac_mode", v, sizeof(v))) return true;
+    if (strcmp(v, "full") == 0) *m = LMAC_FULL;
+    else if (strcmp(v, "oui") == 0) *m = LMAC_OUI;
+    else if (strcmp(v, "none") == 0) *m = LMAC_NONE;
+    else { o.print("mac_mode must be full, oui or none"); return false; }
+    return true;
+}
+
+static bool c5_ready(Print& o) {
+    if (s_c5 && s_c5->link_up) return true;
+    o.print("the C5 radio is not connected");
+    return false;
+}
+
+static void pending(Print& o, const char* what) { o.printf("{\"pending\":true,\"retry_ms\":1500,\"waiting_for\":\"%s\"}", what); }
+
+// "mac":"..." per the caller's mode (full, OUI with the device part masked, or left out)
+static void mac_field(Print& o, const char* mac, ListMacMode mode) {
+    if (mode == LMAC_NONE) return;
+    if (mode == LMAC_FULL) { o.print("\"mac\":"); jprint(o, mac); return; }
+    o.printf("\"mac\":\"%.8s:xx:xx:xx\"", mac);
+}
+
+static bool tool_list_detections(Print& o, const char* args) {
+    ListMacMode mm;
+    if (!arg_mac_mode(args, &mm, o)) return false;
+    bool alerts = false;
+    long lim = 20;
+    jbool(args, "alerts_only", &alerts);
+    if (jint(args, "limit", &lim)) lim = lim < 1 ? 1 : lim > MODEL_MAX_DETS ? MODEL_MAX_DETS : lim;
+    if (!c5_ready(o)) return false;
+    if (!g_model.list_ms) { pending(o, "detection list"); return true; }
+    uint8_t idx[MODEL_MAX_DETS];
+    int n = 0;
+    for (int i = 0; i < g_model.ndets; i++) {                              // strongest first
+        const Det& d = g_model.dets[i];
+        if (!d.used || (alerts && d.best < CONF_ALERT_MIN)) continue;
+        int j = n++;
+        while (j > 0 && g_model.dets[idx[j - 1]].best < d.best) { idx[j] = idx[j - 1]; j--; }
+        idx[j] = (uint8_t)i;
+    }
+    if (n > lim) n = (int)lim;
+    listexport_json_head(o, mm, alerts ? "mcp alerts_only" : "mcp", n);
+    for (int k = 0; k < n; k++) listexport_json_record(o, g_model.dets[idx[k]], mm, k == 0);
+    o.print("]}");
+    return true;
+}
+
+static const char* const SEC_NAMES[] = { "unknown", "open", "wep", "wpa", "wpa2", "wpa2_wpa3", "wpa3", "wpa2_enterprise", "wpa3_enterprise", "owe" };
+static const char* const ATYPE_NAMES[] = { "unknown", "ble_public", "ble_random_static", "ble_rpa", "ble_nrpa", "wifi_universal", "wifi_local" };
+
+static bool tool_scan_wifi(Print& o, const char* args) {
+    ListMacMode mm;
+    if (!arg_mac_mode(args, &mm, o)) return false;
+    if (!c5_ready(o)) return false;
+    s_aps_until = millis() + WANT_MS;                                      // the screens only poll the AP table while the scope shows it
+    uint32_t now = millis();
+    if (!g_model.aps_ms || now - g_model.aps_ms > 10000) { pending(o, "access point table"); return true; }
+    uint8_t idx[MODEL_MAX_APS];
+    int n = 0;
+    for (int i = 0; i < MODEL_MAX_APS; i++) {                              // strongest first
+        const ApRow& a = g_model.aps[i];
+        if (!a.used) continue;
+        int j = n++;
+        while (j > 0 && g_model.aps[idx[j - 1]].rssi < a.rssi) { idx[j] = idx[j - 1]; j--; }
+        idx[j] = (uint8_t)i;
+    }
+    o.printf("{\"age_ms\":%lu,\"count\":%d,\"access_points\":[", (unsigned long)(now - g_model.aps_ms), n);
+    for (int k = 0; k < n; k++) {
+        const ApRow& a = g_model.aps[idx[k]];
+        o.print(k ? ",{" : "{");
+        if (mm != LMAC_NONE) { mac_field(o, a.mac, mm); o.print(","); }
+        o.print("\"ssid\":"); jprint(o, a.ssid);
+        o.printf(",\"channel\":%u,\"band\":%u,\"security\":\"%s\",\"rssi\":%d,\"age_ms\":%lu}", a.ch, a.band, SEC_NAMES[a.sec <= SEC_OWE ? a.sec : 0],
+                 (int)a.rssi, (unsigned long)(now - a.last_ms));
+    }
+    o.print("]}");
+    return true;
+}
+
+static bool tool_scan_ble(Print& o, const char* args) {
+    ListMacMode mm;
+    if (!arg_mac_mode(args, &mm, o)) return false;
+    if (!c5_ready(o)) return false;
+    uint32_t now = millis();                                                // the BLE table is polled in the background all the time
+    if (!g_model.ble_ms || now - g_model.ble_ms > 15000) { pending(o, "BLE table"); return true; }
+    int n = 0;
+    for (int i = 0; i < MODEL_MAX_BLE; i++) if (g_model.ble[i].used) n++;
+    o.printf("{\"age_ms\":%lu,\"heard\":%u,\"count\":%d,\"devices\":[", (unsigned long)(now - g_model.ble_ms), (unsigned)g_model.ble_total, n);
+    int k = 0;
+    for (int i = 0; i < MODEL_MAX_BLE; i++) {
+        const BleRow& b = g_model.ble[i];
+        if (!b.used) continue;
+        o.print(k++ ? ",{" : "{");
+        if (mm != LMAC_NONE) { mac_field(o, b.mac, mm); o.print(","); }
+        o.print("\"name\":"); jprint(o, b.name);
+        if (b.has_company) o.printf(",\"company_id\":%u", (unsigned)b.company);
+        o.printf(",\"rssi\":%d,\"age_ms\":%lu}", (int)b.rssi, (unsigned long)(now - b.last_ms));
+    }
+    o.print("]}");
+    return true;
+}
+
+static void deg(Print& o, const char* key, int32_t e6) { o.printf(",\"%s\":%.6f", key, e6 / 1e6); }
+
+static bool tool_get_device_profile(Print& o, const char* args) {
+    char want[24];
+    if (!jstr(args, "mac", want, sizeof(want))) { o.print("mac is required (take it from list_detections)"); return false; }
+    if (!c5_ready(o)) return false;
+    const Det* d = nullptr;                                                // only a MAC the table holds: the caller cannot make the C5 chase an arbitrary address
+    for (int i = 0; i < g_model.ndets; i++) if (g_model.dets[i].used && strcasecmp(g_model.dets[i].mac, want) == 0) { d = &g_model.dets[i]; break; }
+    if (!d) { o.print("no such detection (see list_detections)"); return false; }
+    char shown[18];
+    if (ui_wants_profile(shown) && strcmp(shown, d->mac) != 0) { o.print("the INFO screen is showing another detection; leave it and retry"); return false; }
+    strncpy(s_prof_mac, d->mac, sizeof(s_prof_mac) - 1);
+    s_prof_mac[sizeof(s_prof_mac) - 1] = 0;
+    s_prof_until = millis() + WANT_MS;
+    const Profile& p = g_profile;
+    if (!p.have || strcmp(p.mac, d->mac) != 0) { pending(o, "device profile"); return true; }
+    o.print("{\"mac\":"); jprint(o, p.mac);
+    o.printf(",\"age_ms\":%lu,\"address_type\":\"%s\",\"rssi_min\":%d,\"rssi_max\":%d,\"seen_on_both_radios\":%s", (unsigned long)(millis() - p.got_ms),
+             ATYPE_NAMES[p.atype <= AT_WIFI_LOCAL ? p.atype : 0], (int)p.rmin, (int)p.rmax, p.corr ? "true" : "false");
+    if (p.dev_name[0]) { o.print(",\"name\":"); jprint(o, p.dev_name); }
+    if (p.company >= 0) o.printf(",\"company_id\":%ld", (long)p.company);
+    if (p.has_txp) o.printf(",\"tx_power_dbm\":%d", (int)p.txp);
+    if (p.has_appear) o.printf(",\"appearance\":%u", (unsigned)p.appear);
+    if (p.has_apple) o.printf(",\"apple\":{\"type\":%u,\"info\":%u}", (unsigned)p.apple, (unsigned)p.apple_i);
+    if (p.nsvc) {
+        o.print(",\"services\":[");
+        for (int i = 0; i < p.nsvc && i < 4; i++) o.printf("%s\"0x%04x\"", i ? "," : "", (unsigned)p.svc[i]);
+        o.print("]");
+    }
+    if (p.probe[0]) { o.print(",\"probe_ssid\":"); jprint(o, p.probe); }
+    if (p.wifi) {
+        o.printf(",\"wifi\":{\"security\":\"%s\",\"standards\":[", SEC_NAMES[p.wsec <= SEC_OWE ? p.wsec : 0]);
+        const char* sep = "";
+        if (p.wstd & WSTD_N)  { o.printf("%s\"n\"", sep);  sep = ","; }
+        if (p.wstd & WSTD_AC) { o.printf("%s\"ac\"", sep); sep = ","; }
+        if (p.wstd & WSTD_AX) { o.printf("%s\"ax\"", sep); sep = ","; }
+        if (p.wstd & WSTD_BE) { o.printf("%s\"be\"", sep); sep = ","; }
+        o.printf("],\"beacon_interval\":%u,\"hidden_ssid\":%s", (unsigned)p.bint, p.hidden ? "true" : "false");
+        if (p.country[0]) { o.print(",\"country\":"); jprint(o, p.country); }
+        o.print("}");
+    }
+    if (p.rid) {
+        o.printf(",\"remote_id\":{\"ua_type\":%u", (unsigned)p.uat);
+        if (p.uas[0]) { o.print(",\"uas_id\":"); jprint(o, p.uas); }
+        if (p.op[0]) { o.print(",\"operator_id\":"); jprint(o, p.op); }
+        if (p.loc) { deg(o, "lat", p.lat_e6); deg(o, "lon", p.lon_e6); }
+        if (p.has_h)   o.printf(",\"height_m\":%.1f", p.h_dm / 10.0);
+        if (p.has_alt) o.printf(",\"altitude_m\":%.1f", p.alt_dm / 10.0);
+        if (p.has_spd) o.printf(",\"speed_ms\":%.2f", p.spd_cms / 100.0);
+        if (p.has_vs)  o.printf(",\"vertical_speed_ms\":%.2f", p.vs_cms / 100.0);
+        if (p.has_hdg) o.printf(",\"heading_deg\":%ld", (long)p.hdg);
+        if (p.op_pos) { deg(o, "operator_lat", p.olat_e6); deg(o, "operator_lon", p.olon_e6); }
+        o.print("}");
+    }
+    o.print("}");
+    return true;
 }
 
 static const char* const SCHEMA_NONE = "{\"type\":\"object\",\"properties\":{}}";
+#define MAC_MODE_PROP "\"mac_mode\":{\"type\":\"string\",\"enum\":[\"full\",\"oui\",\"none\"],\"description\":\"how much of each MAC to return; default full\"}"
+static const char* const SCHEMA_LIST =
+    "{\"type\":\"object\",\"properties\":{\"alerts_only\":{\"type\":\"boolean\",\"description\":\"only detections at alert strength\"},"
+    MAC_MODE_PROP ",\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":40,\"description\":\"default 20, strongest first\"}}}";
+static const char* const SCHEMA_SCAN = "{\"type\":\"object\",\"properties\":{" MAC_MODE_PROP "}}";
+static const char* const SCHEMA_PROFILE =
+    "{\"type\":\"object\",\"properties\":{\"mac\":{\"type\":\"string\",\"description\":\"a MAC from list_detections\"}},\"required\":[\"mac\"]}";
 
 // Only registry rows that have a handler here are offered by tools/list.
 static const Tool TOOLS[] = {
-    { "get_status", SCHEMA_NONE, tool_get_status },
+    { "get_status",         SCHEMA_NONE,    tool_get_status },
+    { "list_detections",    SCHEMA_LIST,    tool_list_detections },
+    { "scan_wifi",          SCHEMA_SCAN,    tool_scan_wifi },
+    { "scan_ble",           SCHEMA_SCAN,    tool_scan_ble },
+    { "get_device_profile", SCHEMA_PROFILE, tool_get_device_profile },
 };
 static const int NTOOLS = (int)(sizeof(TOOLS) / sizeof(TOOLS[0]));
 
@@ -254,8 +448,8 @@ static void rpc_dispatch(WiFiClient& c, const char* body) {
         OutBuf o(c);
         o.printf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"", id);
         EscOut e(o);
-        t->fn(e, argp ? argp : "");
-        o.print("\"}]}}");
+        bool ok = t->fn(e, argp ? argp : "");
+        o.print(ok ? "\"}]}}" : "\"}],\"isError\":true}}");
         o.flush();
         return;
     }

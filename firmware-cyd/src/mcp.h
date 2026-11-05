@@ -11,3 +11,8 @@
 void mcp_init(const C5Status* c5);       // once, at setup
 void mcp_tick(uint32_t now_ms);          // every loop: starts/stops the listener with the link, serves one request at a time
 bool mcp_running(void);
+
+// On-demand polling: true for a short while after a tool asked for data the C5 is not already being polled for.
+// main.cpp ORs these into the polls the screens drive. The profile slot is shared with the INFO screen, which wins.
+bool mcp_wants_aps(void);
+bool mcp_wants_profile(char* mac_out);   // copies the MAC text (18 bytes) when true

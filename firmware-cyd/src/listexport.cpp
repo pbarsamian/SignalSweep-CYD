@@ -30,6 +30,30 @@ static void mac_text(char* out, size_t cap, const char* mac, ListMacMode mode) {
 
 static const char* radio_text(uint8_t r) { return r == 1 ? "ble" : r == 2 ? "both" : "wifi"; }
 
+const char* listexport_mac_mode_name(ListMacMode m) { return MAC_MODES[m <= LMAC_NONE ? m : LMAC_FULL]; }
+
+size_t listexport_json_head(Print& o, ListMacMode mode, const char* filter, int count) {
+    char flt[64];
+    clean(flt, sizeof(flt), filter ? filter : "");
+    return o.printf("{\"schema\":\"signalsweep-detections\",\"version\":1,\"fw\":\"%s\",\"boot_ms\":%lu,\"mac_mode\":\"%s\",\"filter\":\"%s\",\"count\":%d,\"detections\":[",
+                    FW_VERSION, (unsigned long)millis(), MAC_MODES[mode <= LMAC_NONE ? mode : LMAC_FULL], flt, count);
+}
+
+size_t listexport_json_record(Print& o, const Det& d, ListMacMode mode, bool first) {
+    uint32_t now = millis();
+    char mac[24], name[40], ssid[40];
+    mac_text(mac, sizeof(mac), d.mac, mode);
+    clean(name, sizeof(name), d.name);
+    clean(ssid, sizeof(ssid), d.ssid);
+    const char* type = TYPES[d.type <= 5 ? d.type : 5];
+    bool alerted = d.best >= CONF_ALERT_MIN;                            // Det::alerted is never set on the CYD; the threshold is what an alert means
+    return o.printf("%s{\"type\":\"%s\",\"confidence\":%u,\"strongest\":%u,\"mac\":\"%s\",\"name\":\"%s\",\"ssid\":\"%s\",\"radio\":\"%s\","
+                    "\"band\":%u,\"channel\":%u,\"rssi\":%d,\"first_seen_ago_ms\":%lu,\"last_seen_ago_ms\":%lu,\"times_heard\":%u,"
+                    "\"alerted\":%s,\"muted\":%s}",
+                    first ? "" : ",", type, d.conf, d.best, mac, name, ssid, radio_text(d.radio), d.band, d.ch, (int)d.rssi,
+                    (unsigned long)(now - d.first_ms), (unsigned long)(now - d.last_ms), d.seen, alerted ? "true" : "false", d.muted ? "true" : "false");
+}
+
 bool listexport_save(const Det* const* rows, int n, ListMacMode mode, const char* filter, char* msg, size_t msgsz) {
     if (n <= 0) { snprintf(msg, msgsz, "nothing to save"); return false; }
     if (!sdcap_card_ok()) { snprintf(msg, msgsz, "no SD card"); return false; }
@@ -50,12 +74,11 @@ bool listexport_save(const Det* const* rows, int n, ListMacMode mode, const char
         return false;
     }
     uint32_t now = millis();
+    fc.print("type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,first_seen_ago_ms,last_seen_ago_ms,times_heard,alerted,muted\r\n");
+    bool ok = listexport_json_head(fj, mode, filter, n) > 0;
     char flt[64];
     clean(flt, sizeof(flt), filter ? filter : "");
-    fc.print("type,confidence,strongest,mac,name,ssid,radio,band,channel,rssi,first_seen_ago_ms,last_seen_ago_ms,times_heard,alerted,muted\r\n");
-    fj.printf("{\"schema\":\"signalsweep-detections\",\"version\":1,\"fw\":\"%s\",\"boot_ms\":%lu,\"mac_mode\":\"%s\",\"filter\":\"%s\",\"count\":%d,\"detections\":[",
-              FW_VERSION, (unsigned long)now, MAC_MODES[mode], flt, n);
-    bool ok = true;
+
     for (int i = 0; i < n; i++) {
         const Det& d = *rows[i];
         char mac[24], name[40], ssid[40];
@@ -63,15 +86,11 @@ bool listexport_save(const Det* const* rows, int n, ListMacMode mode, const char
         clean(name, sizeof(name), d.name);
         clean(ssid, sizeof(ssid), d.ssid);
         const char* type = TYPES[d.type <= 5 ? d.type : 5];
-        bool alerted = d.best >= CONF_ALERT_MIN;                        // Det::alerted is never set on the CYD; the threshold is what an alert means
+        bool alerted = d.best >= CONF_ALERT_MIN;
         unsigned long first_ago = (unsigned long)(now - d.first_ms), last_ago = (unsigned long)(now - d.last_ms);
         size_t w1 = fc.printf("%s,%u,%u,%s,%s,%s,%s,%u,%u,%d,%lu,%lu,%u,%u,%u\r\n", type, d.conf, d.best, mac, name, ssid, radio_text(d.radio),
                               d.band, d.ch, (int)d.rssi, first_ago, last_ago, d.seen, alerted ? 1 : 0, d.muted ? 1 : 0);
-        size_t w2 = fj.printf("%s{\"type\":\"%s\",\"confidence\":%u,\"strongest\":%u,\"mac\":\"%s\",\"name\":\"%s\",\"ssid\":\"%s\",\"radio\":\"%s\","
-                              "\"band\":%u,\"channel\":%u,\"rssi\":%d,\"first_seen_ago_ms\":%lu,\"last_seen_ago_ms\":%lu,\"times_heard\":%u,"
-                              "\"alerted\":%s,\"muted\":%s}",
-                              i ? "," : "", type, d.conf, d.best, mac, name, ssid, radio_text(d.radio), d.band, d.ch, (int)d.rssi,
-                              first_ago, last_ago, d.seen, alerted ? "true" : "false", d.muted ? "true" : "false");
+        size_t w2 = listexport_json_record(fj, d, mode, i == 0);
         if (!w1 || !w2) ok = false;
     }
     fj.print("]}\r\n");
