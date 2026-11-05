@@ -58,11 +58,26 @@ public:
     explicit OutBuf(WiFiClient& c) : c_(c) {}
     size_t write(uint8_t b) override { if (n_ == sizeof(buf_)) flush(); buf_[n_++] = b; return 1; }
     size_t write(const uint8_t* p, size_t len) override { for (size_t i = 0; i < len; i++) write(p[i]); return len; }
-    void flush() override { if (n_) { c_.write(buf_, n_); n_ = 0; } }
+    // WiFiClient::write() may accept only part of a buffer; the rest is sent on the next try, for up to 2 s. A reply that
+    // could not be sent in full is logged, because the client would otherwise see it silently cut short.
+    void flush() override {
+        if (!n_) return;
+        size_t off = 0;
+        uint32_t until = millis() + 2000;
+        while (!failed_ && off < n_ && (int32_t)(until - millis()) > 0) {
+            size_t w = c_.write(buf_ + off, n_ - off);
+            if (w) off += w;
+            else if (!c_.connected()) break;
+            else delay(2);
+        }
+        if (off < n_ && !failed_) { failed_ = true; Serial.printf("[mcp] reply cut short: %u of %u bytes sent\n", (unsigned)off, (unsigned)n_); }
+        n_ = 0;
+    }
 private:
     WiFiClient& c_;
     uint8_t buf_[512];
     size_t n_ = 0;
+    bool failed_ = false;
 };
 
 // Escapes what is written through it so that a JSON document can sit inside a JSON string (the MCP tool result text).
@@ -389,7 +404,7 @@ static void rpc_dispatch(WiFiClient& c, const char* body) {
         else plain(c, 400, "Bad Request");
         return;
     }
-    if (!has_id) { plain(c, 202, "Accepted"); return; }                  // a notification (notifications/initialized, ...): no reply body
+    if (!has_id) { head(c, 202, "Accepted", "text/plain", "Content-Length: 0\r\n"); return; }                // a notification (notifications/initialized, ...): no reply body
 
     if (strcmp(method, "initialize") == 0) {
         char ver[16] = "2025-03-26";
@@ -483,7 +498,7 @@ static bool bearer_ok(const char* v) {
 static void serve(WiFiClient& c) {
     uint32_t deadline = millis() + MCP_IO_MS;
     char line[160];
-    if (read_line(c, line, sizeof(line), deadline) <= 0) return;
+    if (read_line(c, line, sizeof(line), deadline) <= 0) { Serial.println("[mcp] no request line within the time limit"); return; }
     char* sp = strchr(line, ' ');
     if (!sp) { plain(c, 400, "Bad Request"); return; }
     *sp = 0;
@@ -550,6 +565,7 @@ void mcp_tick(uint32_t) {
     if (!s_up) return;
     WiFiClient c = s_srv.available();
     if (!c) return;
+    c.setNoDelay(true);                                                   // send each write at once: the header and the body are separate writes, and Nagle holds the second behind the first's ACK
     serve(c);
     c.flush();
     c.stop();
