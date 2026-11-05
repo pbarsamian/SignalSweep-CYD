@@ -32,7 +32,9 @@ typedef struct {
 // them, but the handlers are user-supplied (PROTOCOL.md §7). Their disclaimers
 // are written to be shown verbatim before a human authorizes.
 #define SS_CAP_LIST(X)                                                          \
-  X(SS_OP_SCAN_WIFI,          "scan_wifi",          SS_CLS_PASSIVE,         false, SS_MM_ANY, NULL,                                                             \
+  X(SS_OP_GET_STATUS,         "get_status",         SS_CLS_PASSIVE,         false, SS_MM_ANY, NULL,                                                             \
+      "Device status: RF mode, Wi-Fi link, battery, C5 link and scan state, free heap.") \
+  X(SS_OP_SCAN_WIFI,         "scan_wifi",          SS_CLS_PASSIVE,         false, SS_MM_ANY, NULL,                                                             \
       "Listen-only 2.4/5 GHz Wi-Fi scan. No probe requests are sent.")         \
   X(SS_OP_SCAN_BLE,           "scan_ble",           SS_CLS_PASSIVE,         false, SS_MM_ANY, NULL,                                                             \
       "Passive BLE scan. No scan-requests are sent.")                          \

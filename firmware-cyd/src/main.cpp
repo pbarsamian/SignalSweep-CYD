@@ -27,6 +27,7 @@
 #include "ui.h"
 #include "keyboard.h"
 #include "link.h"
+#include "mcp.h"
 
 // ---- pins (LOCKED in BUILD_MANIFEST.md section 2) ----------------------------
 #define LINK_RX_PIN 27   // CYD RX  <- C5 TX (GPIO9, pad D9)
@@ -631,6 +632,7 @@ void setup() {
     static const UiCallbacks cbs = { []() { if (c5.link_up) send_set_power(true); else set_last("no link: cannot enter charge mode"); },
                                      []() { if (c5.link_up) send_set_config(); } };
     ui_init(cbs);
+    mcp_init(&c5);
     st = selftest_run();                      // M1 checks, on-device
 
     g_link.on_resp = on_resp;
@@ -733,6 +735,7 @@ void loop() {
     }
 
     if (!s_charge_ui) {
+        mcp_tick(now);                                   // the MCP server: serves at most one request per pass
         UiCtx ctx = { &c5, mode_get(), &view };
         ui_update(ctx);
     }

@@ -12,7 +12,7 @@ static const int     NSTEPS = (int)(sizeof(STEPS) / sizeof(STEPS[0]));
 static LinkState s_state = LINK_OFF;             // always OFF at boot
 static uint32_t  s_deadline = 0;                 // millis() at which the idle timer fires (valid while not OFF)
 static int       s_step = -1;                    // index into STEPS, loaded on first use
-static char      s_token[8] = {};
+static char      s_token[12] = {};
 static char      s_ssid[12] = {}, s_psk[12] = {}, s_ip[16] = {};
 static uint8_t   s_chan = 1;
 static bool      s_ap_up = false;
@@ -397,7 +397,12 @@ bool link_tick(uint32_t now_ms) {
     return false;
 }
 
-void link_new_token(void) { snprintf(s_token, sizeof(s_token), "%06u", (unsigned)(esp_random() % 1000000u)); }
+// 10 characters from 31 unambiguous ones (about 50 bits): a 6-digit token could be guessed over a LAN in hours.
+void link_new_token(void) {
+    static const char AL[] = "abcdefghjkmnpqrstuvwxyz23456789";
+    for (int i = 0; i < 10; i++) s_token[i] = AL[esp_random() % (sizeof(AL) - 1)];
+    s_token[10] = 0;
+}
 
 const char* link_token(void) {
     if (!s_token[0]) link_new_token();

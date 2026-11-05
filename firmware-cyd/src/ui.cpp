@@ -1656,7 +1656,7 @@ static void draw_link(const UiCtx& c) {
     tft.setTextDatum(ML_DATUM);
     tft.drawString("TOKEN", 6, LINK_ROW_TOKEN + 14, 2);
     tft.setTextColor(C_ACCENT, C_BLACK);
-    tft.drawString(link_token(), 80, LINK_ROW_TOKEN + 14, 4);
+    tft.drawString(link_token(), 74, LINK_ROW_TOKEN + 14, tft.textWidth(link_token(), 4) <= SCREEN_W - 74 - 84 ? 4 : 2);   // the big font if it fits beside NEW
     draw_button(SCREEN_W - 76, LINK_ROW_TOKEN, 70, 30, "NEW", C_LTGREY);
 
     uint32_t left = link_idle_left_s();                            // status line

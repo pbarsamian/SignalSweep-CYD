@@ -69,6 +69,6 @@ void        link_activity(void);            // an MCP request arrived: restart t
 uint32_t    link_idle_left_s(void);         // 0 when the link is off
 bool        link_tick(uint32_t now_ms);     // returns true on the call that auto-turned the link off
 
-// Bearer token for the MCP endpoint (stage: 9b). Six random digits, new at every boot; link_new_token() re-rolls it.
+// Bearer token for the MCP endpoint (9b). Ten random characters, new at every boot; link_new_token() re-rolls it.
 const char* link_token(void);
 void        link_new_token(void);
