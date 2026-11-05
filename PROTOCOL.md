@@ -462,9 +462,10 @@ secret) fails on the C5. Single-use nonces stop replay of a captured token.
 ## 6. MCP surface (CYD server)
 
 MCP is JSON-RPC 2.0. The CYD implements the three methods that matter —
-`initialize`, `tools/list`, `tools/call` — over HTTP+SSE (simplest on an ESP32)
-or WebSocket. `tools/list` is generated directly from the capability registry,
-so the tool surface and the gate can't disagree. Tool names == `CapEntry.id`.
+`initialize`, `tools/list`, `tools/call` (plus `ping`) — as plain request and response
+over HTTP, no SSE and no WebSocket (see 6b). `tools/list` is generated directly from the
+capability registry, so the tool surface and the gate can't disagree. Tool names ==
+`CapEntry.id`.
 
 ### 6a. Link states (CYD Wi-Fi) — design agreed 2026-11-03
 
@@ -497,18 +498,61 @@ Rules:
   the offer is answered or the link goes down. Nothing auto-joins at boot, and a dropped
   join goes to OFF (no auto-reconnect). Not built: a scan list that fills in the name (3c),
   an AP provisioning page, a `wifi.txt` on the SD card, and a BLE keyboard (#27).
-- Auth: the CYD shows a random bearer token on the LINK screen; every MCP request
-  carries it. Read-only tools only in 9b. HTTP, not TLS. This stops casual access on a
-  shared network and is not a defence against a determined attacker on that network.
+- Auth (built): the CYD shows a random bearer token on the LINK screen, ten characters from
+  an alphabet without look-alikes, new at every boot. Every MCP request carries it as
+  `Authorization: Bearer <token>`, compared in constant time. Five wrong tokens in a row lock
+  every client out for 30 s (HTTP 429). Read-only tools only in 9b. HTTP, not TLS. This stops
+  casual access on a shared network and is not a defence against a determined attacker on that
+  network; the token and the data travel in clear text.
 - The LINK screen is reached from SET and shows: state, SSID/IP/hostname, scan list,
   saved networks (with Forget), AP SSID and PSK, token, idle-off setting, heap, clients.
 
 ### 6b. Transport and first tools
 
-HTTP `POST /mcp` (streamable-HTTP style). First tools are all PASSIVE, named by
-registry id, and return the schema-v1 record from §3b-2/#15: `list_detections`,
-`get_device_profile`, `get_status` (mode, link state, battery, link stats, fw hash),
-`get_alerts`. Live alert push over SSE is not in v1.
+**Transport (built).** `POST /mcp` on port 80, one JSON-RPC request per connection, the
+reply is a single `application/json` document and the connection closes. Other paths get
+404 and other methods 405. The server runs only while the link is up (AP, or JOIN once
+connected) and stops when it goes down. On JOIN it advertises `signalsweep.local` and an
+`_http._tcp` service; on AP the address is `192.168.4.1`. Notifications get `202`.
+
+It is a small hand-written reader, not the Arduino core's `WebServer`, because that reads
+the whole POST body into memory before any handler or auth check runs, with no size limit.
+This one reads the request line and headers, checks the token, and only then reads the
+body: a missing or wrong token gets `401` (`WWW-Authenticate: Bearer`) before any body
+byte is read, and a body over 2048 bytes gets `413`. A request has 800 ms to arrive in
+full. The server runs in the main loop, so one request is served at a time.
+
+**Tools (built).** All PASSIVE, named by registry id, and offered only if the CYD has a
+handler for them, so `tools/list` and the gate cannot disagree. Each call is also gated by
+`ss_cap_check` against the current mode. A tool that fails returns a normal result with
+`isError: true` and a one-line reason.
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `get_status` | none | fw, uptime, free heap, RF mode, link state and idle time left, C5 link, battery, scan state, detection count |
+| `list_detections` | `alerts_only` (bool), `mac_mode` (`full` default, `oui`, `none`), `limit` (1-40, default 20) | the schema-v1 record of §3b-2/#15, strongest first; the same writer produces the SD export |
+| `scan_wifi` | `mac_mode` | the access points the C5 has heard (up to 24), strongest first: SSID, channel, band, security, RSSI, `age_ms` |
+| `scan_ble` | `mac_mode` | the BLE devices heard (the 16 freshest), with `heard` for the total: name, company id, RSSI, `age_ms` |
+| `get_device_profile` | `mac` (required; case does not matter) | the cached deep profile: address type, RSSI range, name, company, services, Wi-Fi security and standards, Remote ID fields |
+
+The server cannot wait on the C5, so every read tool answers from the CYD's cache. If the
+cache is cold or stale the reply is `{"pending":true,"retry_ms":1500,"waiting_for":"..."}` and
+the caller asks again. `scan_wifi` and `get_device_profile` also make the CYD poll the C5
+for 20 s, since the screens only poll those while their page is showing. `get_device_profile`
+accepts only a MAC that is in the detection table, so a caller cannot make the C5 chase an
+arbitrary address, and the INFO screen keeps priority on the single profile slot: while it
+shows another detection the tool returns an error. `mac_mode` defaults to `full`, because a
+caller needs the full MAC to ask for a profile; `oui` masks the device part and `none`
+leaves the MAC out. `scan_wifi` and `scan_ble` read what the C5 has already heard; they do
+not trigger a radio scan, and nothing here transmits.
+
+Not built: `get_alerts` and live alert push (SSE) are not in v1; a caller polls
+`list_detections` with `alerts_only`.
+
+**Reaching the CYD.** The laptop must be on the same network as the CYD. A corporate VPN
+client that claims the network's address range (the hotspot's `172.20.94.0/24` under a
+Palo Alto client, in testing) sends the traffic into the VPN, which accepts the TCP
+connection and then never answers, so every request hangs. Turn the VPN off, or use AP mode.
 
 PASSIVE tools return results directly. ACTIVE tools return, on first call, a
 `consent_required` result describing the pending touch-confirm — the actual
